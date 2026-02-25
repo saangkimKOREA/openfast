@@ -366,6 +366,10 @@ IMPLICIT NONE
     INTEGER(IntKi)  :: Jac_ny = 0_IntKi      !< number of outputs in jacobian matrix [-]
     INTEGER(IntKi)  :: Jac_nx = 0_IntKi      !< half the number of continuous states in jacobian matrix [-]
     LOGICAL  :: RotStates = .false.      !< Orient states in rotating frame during linearization? (flag) [-]
+    ! --- PISA / Macro-element (prototype v1) ---
+    LOGICAL  :: UsePISA = .false.                 ! Enable TP/mudline macro-element
+    REAL(ReKi), DIMENSION(1:6) :: PISA_K = 0.0_ReKi  ! Diagonal stiffness [N/m, N/rad]
+    REAL(ReKi), DIMENSION(1:6) :: PISA_C = 0.0_ReKi  ! Diagonal damping  [N/(m/s), N/(rad/s)]    
   END TYPE SD_ParameterType
 ! =======================
 ! =========  SD_InputType  =======

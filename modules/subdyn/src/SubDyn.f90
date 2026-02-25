@@ -420,7 +420,21 @@ SUBROUTINE SD_Init( InitInput, u, p, x, xd, z, OtherState, y, m, Interval, InitO
    if (InitInput%Linearize) then
      call SD_Init_Jacobian(Init, p, u, y, InitOut, ErrStat2, ErrMsg2); if(Failed()) return
    endif
-   
+
+   ! -------------------------------------------------
+   ! Temporary PISA prototype initialization (Step 1)
+   ! -------------------------------------------------
+   p%UsePISA = .true.
+
+   p%PISA_K = 0.0_ReKi
+   p%PISA_C = 0.0_ReKi
+
+   ! Example stiffness (start conservative; tune later)
+   p%PISA_K(1) = 1.0e8_ReKi    ! Surge  [N/m]
+   p%PISA_K(2) = 1.0e8_ReKi    ! Sway   [N/m]
+   p%PISA_K(4) = 1.0e10_ReKi   ! Roll   [N·m/rad]
+   p%PISA_K(5) = 1.0e10_ReKi   ! Pitch  [N·m/rad]
+
    ! Tell GLUECODE the SubDyn timestep interval 
    Interval = p%SDdeltaT
    CALL CleanUp()
@@ -509,6 +523,7 @@ SUBROUTINE SD_CalcOutput( t, u, p, x, xd, z, OtherState, y, m, ErrStat, ErrMsg )
       REAL(ReKi)                   :: Y1_Guy_L(6)
       REAL(ReKi)                   :: Y1_Utp(6)
       REAL(ReKi)                   :: Y1_GuyanLoadCorrection(3) ! Lever arm moment contributions due to interface displacement
+      REAL(ReKi)                   :: Fpisa(6)
       REAL(ReKi)                   :: udotdot_TP(6)
       INTEGER(IntKi), pointer      :: DOFList(:)
       REAL(ReKi)                   :: DCM(3,3)
@@ -794,10 +809,20 @@ SUBROUTINE SD_CalcOutput( t, u, p, x, xd, z, OtherState, y, m, ErrStat, ErrMsg )
             Y1(4:6) = Y1(4:6) + Y1_GuyanLoadCorrection 
          endif
       endif
+
+IF (p%UsePISA) THEN
+   ! Simple linear macro-element: F = -K*u - C*udot
+   Fpisa = 0.0_ReKi
+   Fpisa(1:6) = - p%PISA_K(1:6) * m%u_TP(1:6) - p%PISA_C(1:6) * m%udot_TP(1:6)
+
+   ! Apply to interface reaction vector (sign convention may need flipping later)
+   Y1(1:6) = Y1(1:6) + Fpisa(1:6)
+END IF
+
       ! values on the interface mesh are Y1 (SubDyn forces) + Hydrodynamic forces
       y%Y1Mesh%Force (:,1) = Y1(1:3) 
       y%Y1Mesh%Moment(:,1) = Y1(4:6)
-       
+
      !________________________________________
      ! CALCULATE OUTPUT TO BE WRITTEN TO FILE 
      !________________________________________
