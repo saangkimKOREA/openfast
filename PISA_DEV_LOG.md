@@ -26,7 +26,15 @@
 
 ## Next steps
 
-
+5.
+    surge motion (PtfmSurge_[m])
+        PISA_K(1) (surge / x-translation)
+    sway motion (PtfmSway_[m])
+        PISA_K(2) (sway / y-translation)
+    checking fore-aft bending / pitch-type response
+        PISA_K(5) (pitch / rotation about y)
+    side-side bending / roll-type response
+        PISA_K(4) (roll / rotation about x)
 
 4. 1st step
     - a mudline 6-DOF macro-element (not distributed springs)

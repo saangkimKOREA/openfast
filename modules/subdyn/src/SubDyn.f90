@@ -430,7 +430,8 @@ SUBROUTINE SD_Init( InitInput, u, p, x, xd, z, OtherState, y, m, Interval, InitO
    p%PISA_C = 0.0_ReKi
 
    ! Example stiffness (start conservative; tune later)
-   p%PISA_K(1) = 1.0e8_ReKi    ! Surge  [N/m]
+   ! p%PISA_K(1) = 1.0e8_ReKi    ! Surge  [N/m]
+   p%PISA_K(1) = 1.0e9_ReKi    ! Surge  [N/m]
    p%PISA_K(2) = 1.0e8_ReKi    ! Sway   [N/m]
    p%PISA_K(4) = 1.0e10_ReKi   ! Roll   [N·m/rad]
    p%PISA_K(5) = 1.0e10_ReKi   ! Pitch  [N·m/rad]
