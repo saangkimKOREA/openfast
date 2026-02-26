@@ -421,20 +421,6 @@ SUBROUTINE SD_Init( InitInput, u, p, x, xd, z, OtherState, y, m, Interval, InitO
      call SD_Init_Jacobian(Init, p, u, y, InitOut, ErrStat2, ErrMsg2); if(Failed()) return
    endif
 
-   ! -------------------------------------------------
-   ! Temporary PISA prototype initialization (Step 1)
-   ! -------------------------------------------------
-   p%UsePISA = .true.
-
-   p%PISA_K = 0.0_ReKi
-   p%PISA_C = 0.0_ReKi
-
-   ! Example stiffness (start conservative; tune later)
-   p%PISA_K(1) = 1.0e8_ReKi    ! Surge  [N/m]
-   p%PISA_K(2) = 1.0e8_ReKi    ! Sway   [N/m]
-   p%PISA_K(4) = 1.0e10_ReKi   ! Roll   [N·m/rad]
-   p%PISA_K(5) = 1.0e10_ReKi   ! Pitch  [N·m/rad]
-
    ! Tell GLUECODE the SubDyn timestep interval 
    Interval = p%SDdeltaT
    CALL CleanUp()
@@ -1041,6 +1027,15 @@ IF (Check(.not.(any(idSIM_Valid==p%SttcSolve)), 'Invalid value entered for SttcS
 ! GuyanLoadCorrection will always be set to true. The corresponding user input is commented out above.
 p%GuyanLoadCorrection=.True.
 
+! PISA macro-element prototype (TP/mudline element)
+! Defaults preserve legacy behavior when these lines are absent in older files.
+p%UsePISA = .false.
+p%PISA_K  = 0.0_ReKi
+p%PISA_C  = 0.0_ReKi
+CALL ReadVar ( UnIn, SDInputFile, p%UsePISA, 'UsePISA', 'Enable TP/mudline PISA macro-element', ErrStat2, ErrMsg2, UnEc ); if(Failed()) return
+CALL ReadAry ( UnIn, SDInputFile, p%PISA_K, 6, 'PISA_K', 'PISA macro-element diagonal stiffness [N/m, N/rad]', ErrStat2, ErrMsg2, UnEc ); if(Failed()) return
+CALL ReadAry ( UnIn, SDInputFile, p%PISA_C, 6, 'PISA_C', 'PISA macro-element diagonal damping [N/(m/s), N/(rad/s)]', ErrStat2, ErrMsg2, UnEc ); if(Failed()) return
+
 !-------------------- FEA and CRAIG-BAMPTON PARAMETERS---------------------------
 CALL ReadCom  ( UnIn, SDInputFile, ' FEA and CRAIG-BAMPTON PARAMETERS ', ErrStat2, ErrMsg2, UnEc ); if(Failed()) return
 CALL ReadIVar ( UnIn, SDInputFile, Init%FEMMod, 'FEMMod', 'FEM analysis mode'             ,ErrStat2, ErrMsg2, UnEc ); if(Failed()) return ! 0= Euler-Bernoulli(E-B); 1=Tapered E-B; 2= Timoshenko; 3= tapered Timoshenko
@@ -1589,6 +1584,7 @@ CALL ReadCom( UnIn, SDInputFile, 'SSOutList',ErrStat2, ErrMsg2, UnEc ); if(Faile
 ALLOCATE(Init%SSOutList(MaxOutPts + p%OutAllInt*p%OutAllDims), STAT=ErrStat2)
 If (Check( ErrStat2 /= ErrID_None ,'Error allocating SSOutList arrays')) return
 CALL ReadOutputList ( UnIn, SDInputFile, Init%SSOutList, p%NumOuts, 'SSOutList', 'List of outputs requested', ErrStat2, ErrMsg2, UnEc ); if(Failed()) return
+
 CALL CleanUp()
 
 CONTAINS

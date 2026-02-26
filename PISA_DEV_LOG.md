@@ -26,6 +26,26 @@
 
 ## Next steps
 
+5. 2nd step
+Task: Refactor my SubDyn "PISA macro-element prototype" so it is controlled by the SubDyn input file, not hard-coded.
+
+Constraints:
+- Only edit SubDyn.f90 (and SubDyn_Types.f90 if needed). Do not touch other OpenFAST modules.
+- Keep behavior identical to current: Fpisa(1:6) = -PISA_K(1:6)*u_TP(1:6) - PISA_C(1:6)*udot_TP(1:6) and add it to Y1(1:6) inside SD_CalcOutput.
+- Remove the hard-coded initialization block in SD_Init that sets UsePISA=.true. and assigns example stiffness values.
+
+Implementation details:
+- Add new input parameters in the SubDyn input-file reader section (near GuyanLoadCorrection / before "FEA and CRAIG-BAMPTON PARAMETERS"):
+  * UsePISA (logical)
+  * PISA_K(6) (ReKi array)
+  * PISA_C(6) (ReKi array)
+- Set defaults: UsePISA=.false., arrays = 0.0.
+- Update any echo/validation needed.
+- Ensure code compiles (declare Fpisa if not already declared where used).
+
+Deliver:
+- Show the exact new input-file lines expected (with comments).
+- Provide a minimal diff-style summary of changes.
 
 
 4. 1st step
