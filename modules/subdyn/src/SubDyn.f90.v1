@@ -421,8 +421,6 @@ SUBROUTINE SD_Init( InitInput, u, p, x, xd, z, OtherState, y, m, Interval, InitO
      call SD_Init_Jacobian(Init, p, u, y, InitOut, ErrStat2, ErrMsg2); if(Failed()) return
    endif
 
-<<<<<<< HEAD
-=======
    ! -------------------------------------------------
    ! Temporary PISA prototype initialization (Step 1)
    ! -------------------------------------------------
@@ -438,7 +436,6 @@ SUBROUTINE SD_Init( InitInput, u, p, x, xd, z, OtherState, y, m, Interval, InitO
    p%PISA_K(4) = 1.0e10_ReKi   ! Roll   [N·m/rad]
    p%PISA_K(5) = 1.0e10_ReKi   ! Pitch  [N·m/rad]
 
->>>>>>> 048f7dd095b37469ac7fe933ec878e8380562339
    ! Tell GLUECODE the SubDyn timestep interval 
    Interval = p%SDdeltaT
    CALL CleanUp()

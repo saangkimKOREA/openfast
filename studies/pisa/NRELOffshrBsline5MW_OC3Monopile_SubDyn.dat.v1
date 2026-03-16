@@ -104,3 +104,7 @@ MemberID   NOutCnt    NodeCnt ![NOutCnt=how many nodes to get output for [< 10];
 "-ReactMXss, -ReactMYss, -ReactMZss" - Base reactions: side-to-side, fore-aft and yaw moments at the mudline.
 END of output channels and end of file. (the word "END" must appear in the first 3 columns of this line)
 
+!---------------------- PISA / Macro-element (optional, end of file) --------------------------
+True              UsePISA           - Enable mudline macro-element (linear)
+1.0e8   1.0e8   0.0   1.0e10  1.0e10  0.0   PISA_K(1:6) - diag stiffness [N/m N/m N/m N-m/rad N-m/rad N-m/rad]
+0.0     0.0     0.0   0.0    0.0    0.0    PISA_C(1:6) - diag damping   [N/(m/s) ... N-m/(rad/s)]
