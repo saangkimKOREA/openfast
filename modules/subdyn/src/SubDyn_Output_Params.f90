@@ -21756,8 +21756,20 @@ module SubDyn_Output_Params
    INTEGER(IntKi), PARAMETER      :: SSqmdd99   = 21705
 
 
+   ! PISA aggregate output channels (total soil spring forces/moments/stiffnesses summed over
+   ! all pile nodes). Forward-ported from tipota snapshot 2026-07-21; IDs placed just above the
+   ! generated ValidParamAry range (21705) since they bypass that table via a SELECT CASE.
+   INTEGER(IntKi), PARAMETER :: PISAFpyx = 21706  !< Total p-y soil force in X [N]
+   INTEGER(IntKi), PARAMETER :: PISAFpyy = 21707  !< Total p-y soil force in Y [N]
+   INTEGER(IntKi), PARAMETER :: PISAFtz  = 21708  !< Total t-z axial soil force [N]
+   INTEGER(IntKi), PARAMETER :: PISAMmtx = 21709  !< Total m-theta soil moment about X [Nm]
+   INTEGER(IntKi), PARAMETER :: PISAMmty = 21710  !< Total m-theta soil moment about Y [Nm]
+   INTEGER(IntKi), PARAMETER :: PISAKpy  = 21711  !< Total secant p-y lateral stiffness (sum ksec*Dz) [N/m]
+   INTEGER(IntKi), PARAMETER :: PISAKmt  = 21712  !< Total secant m-theta stiffness (sum ksec*Dz) [N*m/rad]
+   INTEGER(IntKi), PARAMETER :: PISAKtz  = 21713  !< Total secant t-z axial stiffness (sum ksec*Dz) [N/m]
+
      ! The maximum number of output channels which can be output by the code.
-   INTEGER(IntKi), PARAMETER      :: MaxOutPts  = 21705
+   INTEGER(IntKi), PARAMETER      :: MaxOutPts  = 21713
 
 
    INTEGER(IntKi), PARAMETER ::MNfmKe(6,9,99) = reshape((/ &

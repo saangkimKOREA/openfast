@@ -290,6 +290,25 @@ SUBROUTINE SD_Init( InitInput, u, p, x, xd, z, OtherState, y, m, Interval, InitO
    ! Insert soil stiffness and mass matrix (NOTE: using NodesDOF, unreduced matrix)
    CALL InsertSoilMatrices(Init%M, Init%K, p%NodesDOF, Init, p, ErrStat2, ErrMsg2); if(Failed()) return
 
+   ! --- PISA nonlinear distributed soil springs: map layer table to pile nodes,
+   !     then insert linearized initial-tangent stiffness so CB modes capture soil stiffness
+   CALL InitPISAParams(Init, p, ErrStat2, ErrMsg2); if(Failed()) return
+   CALL InsertPISALinearK(Init%K, p, ErrStat2, ErrMsg2); if(Failed()) return
+   IF (p%UsePISA .AND. p%IntMethod == 4) THEN
+      ! The upstream Phase-8 Newton/Jacobian correction for the AM2 integrator (tipota
+      ! snapshot 2026-06-25) was NOT forward-ported onto this framework version (see
+      ! PISA_DEV_LOG / handover notes, 2026-07-21). With IntMethod=4 (AM2), the nonlinear
+      ! PISA residual force is never added to the state-derivative solve, so pile motion
+      ! evolves under the LINEARIZED initial-tangent soil stiffness only; the PISA output
+      ! channels remain populated (computed post-hoc from that state) but are NOT
+      ! consistent with the state trajectory. Use IntMethod 1/2/3 (RK4/AB4/ABM4) for
+      ! physically-consistent PISA nonlinear behavior.
+      CALL SetErrStat(ErrID_Warn, 'UsePISA=True with IntMethod=4 (AM2): the nonlinear PISA '// &
+         'residual force is not yet applied during AM2 state integration (Phase 8 Newton path '// &
+         'not forward-ported). Pile response uses the linearized soil stiffness only under AM2. '// &
+         'Use IntMethod=1, 2, or 3 for physically-consistent nonlinear PISA behavior.', ErrStat, ErrMsg, 'SD_Init')
+   END IF
+
    ! --- Elimination of constraints (reset M, K, D, to lower size, and BCs IntFc )
    CALL DirectElimination(Init, p, ErrStat2, ErrMsg2); if(Failed()) return
 
@@ -560,6 +579,10 @@ SUBROUTINE SD_CalcOutput( t, u, p, x, xd, z, OtherState, y, m, ErrStat, ErrMsg )
       ! - We only apply the lever arm for       (fixed-bottom case + GuyanLoadCorrection)
       ! - We only rotate the external loads for (floating case + GuyanLoadCorrection)
       call GetExtForceOnInternalDOF(u, p, x, m, m%F_L, ErrStat2, ErrMsg2, GuyanLoadCorrection=(p%GuyanLoadCorrection.and..not.p%Floating), RotateLoads=(p%GuyanLoadCorrection.and.p%Floating)); if(Failed()) return
+      ! --- PISA nonlinear distributed soil spring forces (Option B: residual force on F_L)
+      if (p%UsePISA) then
+         call AddPISAForceToFL(p, x, m, ErrStat2, ErrMsg2); if(Failed()) return
+      end if
       ! --- CB modes contribution to motion (L-DOF only)
       if ( p%nDOFM > 0) then
          if (p%GuyanLoadCorrection.and.p%Floating) then ! >>> Rotate All
@@ -745,6 +768,9 @@ SUBROUTINE SD_CalcOutput( t, u, p, x, xd, z, OtherState, y, m, ErrStat, ErrMsg )
       else ! .not.(p%GuyanLoadCorrection.and.p%Floating)
          ! Compute "non-rotated" external force on internal (F_L) and interface nodes (F_I)
          call GetExtForceOnInternalDOF(u, p, x, m, m%F_L, ErrStat2, ErrMsg2, GuyanLoadCorrection=(p%GuyanLoadCorrection), RotateLoads=.False.); if(Failed()) return
+         if (p%UsePISA) then
+            call AddPISAForceToFL(p, x, m, ErrStat2, ErrMsg2); if(Failed()) return
+         end if
          call GetExtForceOnInterfaceDOF(p, m, F_I)
          ! Contributions from external forces
          Y1_Guy_R =   matmul( F_I, p%TI )     ! = - [-T_I.^T] F_R  = [T_I.^T] F_R =~ F_R T_I (~: FORTRAN convention)
@@ -887,6 +913,11 @@ SUBROUTINE SD_CalcContStateDeriv( t, u, p, x, xd, z, OtherState, m, dxdt, ErrSta
 
       ! Compute F_L, force on internal DOF
       CALL GetExtForceOnInternalDOF(u, p, x, m, m%F_L, ErrStat2, ErrMsg2, GuyanLoadCorrection=(p%GuyanLoadCorrection.and..not.p%Floating), RotateLoads=(p%GuyanLoadCorrection.and.p%Floating))
+
+      ! --- PISA nonlinear distributed soil spring forces (Option B: residual force on F_L)
+      if (p%UsePISA) then
+         CALL AddPISAForceToFL(p, x, m, ErrStat2, ErrMsg2); CALL SetErrStat(ErrStat2, ErrMsg2, ErrStat, ErrMsg, 'SD_CalcContStateDeriv')
+      end if
 
       udotdot_TP = (/u%TPMesh%TranslationAcc(:,1), u%TPMesh%RotationAcc(:,1)/)
       if (p%GuyanLoadCorrection.and.p%Floating) then
@@ -1379,15 +1410,38 @@ if (.not. LegacyFormat) then
          CALL Fatal(' Error in file "'//TRIM(SDInputFile)//'": Spring property line must consist of 22 numerical values. Problematic line: "'//trim(Line)//'"')
          return
       endif
-   ENDDO   
+   ENDDO
+
+   !--------------------- PISA NONLINEAR SOIL SPRINGS --------------------------
+   CALL ReadCom  ( UnIn, SDInputFile, 'PISA nonlinear soil springs section', ErrStat2, ErrMsg2, UnEc ); if(Failed()) return
+   CALL ReadLVar ( UnIn, SDInputFile, Init%UsePISA, 'UsePISA', 'Enable PISA nonlinear soil spring model', ErrStat2, ErrMsg2, UnEc ); if(Failed()) return
+   CALL ReadVar  ( UnIn, SDInputFile, Init%PISA_MudlineZ, 'MudlineZ', 'Global Z-coordinate of mudline', ErrStat2, ErrMsg2, UnEc ); if(Failed()) return
+   CALL ReadIVar ( UnIn, SDInputFile, Init%NPISALayers, 'NPISALayers', 'Number of PISA soil profile depth levels', ErrStat2, ErrMsg2, UnEc ); if(Failed()) return
+   CALL ReadCom  ( UnIn, SDInputFile, 'PISA layer table header 1', ErrStat2, ErrMsg2, UnEc ); if(Failed()) return
+   CALL ReadCom  ( UnIn, SDInputFile, 'PISA layer table header 2', ErrStat2, ErrMsg2, UnEc ); if(Failed()) return
+   CALL ReadCom  ( UnIn, SDInputFile, 'PISA layer table units   ', ErrStat2, ErrMsg2, UnEc ); if(Failed()) return
+   IF (Check( Init%NPISALayers < 0, 'NPISALayers must be >= 0')) return
+   CALL AllocAry(Init%PISA_Layers, Init%NPISALayers, PISALayerCol, 'PISA_Layers', ErrStat2, ErrMsg2); if(Failed()) return
+   DO I = 1, Init%NPISALayers
+      CALL ReadAry( UnIn, SDInputFile, Dummy_ReAry, PISALayerCol, 'PISA_Layers', 'PISA layer '//Num2LStr(I)//' properties', ErrStat2, ErrMsg2, UnEc ); if(Failed()) return
+      Init%PISA_Layers(I,:) = Dummy_ReAry(1:PISALayerCol)
+   ENDDO
+   if (Init%UsePISA .and. Init%NPISALayers < 2) then
+      CALL Fatal(' Error in file "'//TRIM(SDInputFile)//'": UsePISA=True requires at least 2 soil profile layers (NPISALayers >= 2).')
+      return
+   end if
 
 else
    Init%NPropSetsC=0
    Init%NPropSetsR=0
    Init%NPropSetsS=0
+   Init%UsePISA = .FALSE.
+   Init%PISA_MudlineZ = 0.0_ReKi
+   Init%NPISALayers = 0
    CALL AllocAry(Init%PropSetsC, Init%NPropSetsC, PropSetsCCol, 'PropSetsC', ErrStat2, ErrMsg2); if(Failed()) return
    CALL AllocAry(Init%PropSetsR, Init%NPropSetsR, PropSetsRCol, 'RigidPropSets', ErrStat2, ErrMsg2); if(Failed()) return
    CALL AllocAry(Init%PropSetsS, Init%NPropSetsS, PropSetsSCol, 'PropSetsS', ErrStat2, ErrMsg2); if(Failed()) return
+   CALL AllocAry(Init%PISA_Layers, 0, PISALayerCol, 'PISA_Layers', ErrStat2, ErrMsg2); if(Failed()) return
 endif
 
 !---------------------- MEMBER COSINE MATRICES COSM(i,j) ------------------------
@@ -2945,7 +2999,22 @@ SUBROUTINE AllocMiscVars(p, Misc, ErrStat, ErrMsg)
    CALL AllocAry( Misc%Fext,      p%nDOF     , 'm%Fext    ', ErrStat2, ErrMsg2 );CALL SetErrStat( ErrStat2, ErrMsg2, ErrStat, ErrMsg, 'AllocMiscVars')
    CALL AllocAry( Misc%Fext_red,  p%nDOF_red , 'm%Fext_red', ErrStat2, ErrMsg2 );CALL SetErrStat( ErrStat2, ErrMsg2, ErrStat, ErrMsg, 'AllocMiscVars')
    CALL AllocAry( Misc%FG,        p%nDOF     , 'm%FG      ', ErrStat2, ErrMsg2 );CALL SetErrStat( ErrStat2, ErrMsg2, ErrStat, ErrMsg, 'AllocMiscVars')
-   
+
+   ! --- PISA nonlinear soil springs: per-node force / secant-stiffness storage
+   IF (p%UsePISA .AND. p%nPISANodes > 0) THEN
+      CALL AllocAry( Misc%PISA_Fpyx,   p%nPISANodes, 'PISA_Fpyx',   ErrStat2, ErrMsg2); CALL SetErrStat( ErrStat2, ErrMsg2, ErrStat, ErrMsg, 'AllocMiscVars')
+      CALL AllocAry( Misc%PISA_Fpyy,   p%nPISANodes, 'PISA_Fpyy',   ErrStat2, ErrMsg2); CALL SetErrStat( ErrStat2, ErrMsg2, ErrStat, ErrMsg, 'AllocMiscVars')
+      CALL AllocAry( Misc%PISA_Ftz,    p%nPISANodes, 'PISA_Ftz',    ErrStat2, ErrMsg2); CALL SetErrStat( ErrStat2, ErrMsg2, ErrStat, ErrMsg, 'AllocMiscVars')
+      CALL AllocAry( Misc%PISA_Mmtx,   p%nPISANodes, 'PISA_Mmtx',   ErrStat2, ErrMsg2); CALL SetErrStat( ErrStat2, ErrMsg2, ErrStat, ErrMsg, 'AllocMiscVars')
+      CALL AllocAry( Misc%PISA_Mmty,   p%nPISANodes, 'PISA_Mmty',   ErrStat2, ErrMsg2); CALL SetErrStat( ErrStat2, ErrMsg2, ErrStat, ErrMsg, 'AllocMiscVars')
+      CALL AllocAry( Misc%PISA_ksecpy, p%nPISANodes, 'PISA_ksecpy', ErrStat2, ErrMsg2); CALL SetErrStat( ErrStat2, ErrMsg2, ErrStat, ErrMsg, 'AllocMiscVars')
+      CALL AllocAry( Misc%PISA_ksecmt, p%nPISANodes, 'PISA_ksecmt', ErrStat2, ErrMsg2); CALL SetErrStat( ErrStat2, ErrMsg2, ErrStat, ErrMsg, 'AllocMiscVars')
+      CALL AllocAry( Misc%PISA_ksectz, p%nPISANodes, 'PISA_ksectz', ErrStat2, ErrMsg2); CALL SetErrStat( ErrStat2, ErrMsg2, ErrStat, ErrMsg, 'AllocMiscVars')
+      Misc%PISA_Fpyx   = 0.0_ReKi; Misc%PISA_Fpyy   = 0.0_ReKi; Misc%PISA_Ftz   = 0.0_ReKi
+      Misc%PISA_Mmtx   = 0.0_ReKi; Misc%PISA_Mmty   = 0.0_ReKi
+      Misc%PISA_ksecpy = 0.0_ReKi; Misc%PISA_ksecmt = 0.0_ReKi; Misc%PISA_ksectz = 0.0_ReKi
+   END IF
+
 END SUBROUTINE AllocMiscVars
 
 !------------------------------------------------------------------------------------------------------

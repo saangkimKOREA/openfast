@@ -196,6 +196,10 @@ IMPLICIT NONE
     INTEGER(IntKi) , DIMENSION(:,:), ALLOCATABLE  :: NodesConnN      !< Nodes that connect to a common node    [-]
     INTEGER(IntKi) , DIMENSION(:,:), ALLOCATABLE  :: NodesConnE      !< Elements that connect to a common node [-]
     LOGICAL  :: SSSum = .false.      !< SubDyn Summary File Flag               [-]
+    LOGICAL  :: UsePISA = .FALSE.      !< Enable PISA nonlinear distributed soil spring model [-]
+    REAL(ReKi)  :: PISA_MudlineZ = 0.0      !< Global Z-coordinate of mudline [m]
+    INTEGER(IntKi)  :: NPISALayers = 0      !< Number of PISA soil profile depth levels [-]
+    REAL(ReKi) , DIMENSION(:,:), ALLOCATABLE  :: PISA_Layers      !< PISA soil layer table (NPISALayers x PISALayerCol): Depth,H_ult,y_ref,n_py,M_ult,t_ref,n_mt,V_ult,v_ref,n_tz [-]
   END TYPE SD_InitType
 ! =======================
 ! =========  SD_ContinuousStateType  =======
@@ -252,6 +256,14 @@ IMPLICIT NONE
     REAL(R8Ki) , DIMENSION(:), ALLOCATABLE  :: FG      !< Gravity force vector (without initial cable force T0) based on the instantaneous platform orientation, not reduced (floating only) [N]
     REAL(ReKi) , DIMENSION(:), ALLOCATABLE  :: UL_SIM      !< UL for SIM = PhiL qL0- PhiM qm0, size nL [-]
     REAL(ReKi) , DIMENSION(:), ALLOCATABLE  :: UL_0m      !< Intermediate UL term for SIM = PhiM qm0, size nL [-]
+    REAL(ReKi) , DIMENSION(:), ALLOCATABLE  :: PISA_Fpyx      !< Nonlinear p-y soil force in X per PISA node (integrated over Dz) [N]
+    REAL(ReKi) , DIMENSION(:), ALLOCATABLE  :: PISA_Fpyy      !< Nonlinear p-y soil force in Y per PISA node (integrated over Dz) [N]
+    REAL(ReKi) , DIMENSION(:), ALLOCATABLE  :: PISA_Ftz      !< Nonlinear t-z axial soil force per PISA node (integrated over Dz) [N]
+    REAL(ReKi) , DIMENSION(:), ALLOCATABLE  :: PISA_Mmtx      !< Nonlinear m-theta soil moment about X per PISA node (integrated over Dz) [Nm]
+    REAL(ReKi) , DIMENSION(:), ALLOCATABLE  :: PISA_Mmty      !< Nonlinear m-theta soil moment about Y per PISA node (integrated over Dz) [Nm]
+    REAL(ReKi) , DIMENSION(:), ALLOCATABLE  :: PISA_ksecpy      !< Secant p-y stiffness x Dz per PISA node [N/m]
+    REAL(ReKi) , DIMENSION(:), ALLOCATABLE  :: PISA_ksecmt      !< Secant m-theta stiffness x Dz per PISA node [N*m/rad]
+    REAL(ReKi) , DIMENSION(:), ALLOCATABLE  :: PISA_ksectz      !< Secant t-z stiffness x Dz per PISA node [N/m]
   END TYPE SD_MiscVarType
 ! =======================
 ! =========  SD_ParameterType  =======
@@ -366,10 +378,23 @@ IMPLICIT NONE
     INTEGER(IntKi)  :: Jac_ny = 0_IntKi      !< number of outputs in jacobian matrix [-]
     INTEGER(IntKi)  :: Jac_nx = 0_IntKi      !< half the number of continuous states in jacobian matrix [-]
     LOGICAL  :: RotStates = .false.      !< Orient states in rotating frame during linearization? (flag) [-]
-    ! --- PISA / Macro-element (prototype v1) ---
-    LOGICAL  :: UsePISA = .false.                 ! Enable TP/mudline macro-element
-    REAL(ReKi), DIMENSION(1:6) :: PISA_K = 0.0_ReKi  ! Diagonal stiffness [N/m, N/rad]
-    REAL(ReKi), DIMENSION(1:6) :: PISA_C = 0.0_ReKi  ! Diagonal damping  [N/(m/s), N/(rad/s)]    
+    LOGICAL  :: UsePISA = .FALSE.      !< Enable PISA nonlinear distributed soil spring model [-]
+    INTEGER(IntKi)  :: nPISANodes = 0      !< Number of pile nodes with PISA distributed soil springs [-]
+    INTEGER(IntKi) , DIMENSION(:), ALLOCATABLE  :: PISA_Nidx      !< SubDyn node indices of PISA spring nodes [-]
+    REAL(ReKi) , DIMENSION(:), ALLOCATABLE  :: PISA_Depth      !< Depth below mudline of each PISA node [m]
+    REAL(ReKi) , DIMENSION(:), ALLOCATABLE  :: PISA_Dz      !< Tributary length of each PISA node for spring integration [m]
+    REAL(ReKi) , DIMENSION(:), ALLOCATABLE  :: PISA_Hu      !< Ultimate lateral resistance per unit length at each PISA node [N/m]
+    REAL(ReKi) , DIMENSION(:), ALLOCATABLE  :: PISA_yref      !< Reference lateral displacement at each PISA node [m]
+    REAL(ReKi) , DIMENSION(:), ALLOCATABLE  :: PISA_npy      !< p-y curve shape factor at each PISA node [-]
+    REAL(ReKi) , DIMENSION(:), ALLOCATABLE  :: PISA_Mu      !< Ultimate moment resistance per unit length at each PISA node [Nm/m]
+    REAL(ReKi) , DIMENSION(:), ALLOCATABLE  :: PISA_tref      !< Reference rotation at each PISA node [rad]
+    REAL(ReKi) , DIMENSION(:), ALLOCATABLE  :: PISA_nmt      !< m-theta curve shape factor at each PISA node [-]
+    REAL(ReKi) , DIMENSION(:), ALLOCATABLE  :: PISA_Vu      !< Ultimate axial resistance per unit length at each PISA node [N/m]
+    REAL(ReKi) , DIMENSION(:), ALLOCATABLE  :: PISA_vref      !< Reference axial displacement at each PISA node [m]
+    REAL(ReKi) , DIMENSION(:), ALLOCATABLE  :: PISA_ntz      !< t-z curve shape factor at each PISA node [-]
+    REAL(ReKi) , DIMENSION(:), ALLOCATABLE  :: PISA_kpy0      !< Initial tangent lateral stiffness per unit length at each PISA node (k0=Hu/(yref*npy)) [N/m/m]
+    REAL(ReKi) , DIMENSION(:), ALLOCATABLE  :: PISA_kmt0      !< Initial tangent rotational stiffness per unit length at each PISA node (k0=Mu/(tref*nmt)) [Nm/rad/m]
+    REAL(ReKi) , DIMENSION(:), ALLOCATABLE  :: PISA_ktz0      !< Initial tangent axial stiffness per unit length at each PISA node (k0=Vu/(vref*ntz)) [N/m/m]
   END TYPE SD_ParameterType
 ! =======================
 ! =========  SD_InputType  =======
@@ -1643,6 +1668,21 @@ subroutine SD_CopyInitType(SrcInitTypeData, DstInitTypeData, CtrlCode, ErrStat, 
       DstInitTypeData%NodesConnE = SrcInitTypeData%NodesConnE
    end if
    DstInitTypeData%SSSum = SrcInitTypeData%SSSum
+   DstInitTypeData%UsePISA = SrcInitTypeData%UsePISA
+   DstInitTypeData%PISA_MudlineZ = SrcInitTypeData%PISA_MudlineZ
+   DstInitTypeData%NPISALayers = SrcInitTypeData%NPISALayers
+   if (allocated(SrcInitTypeData%PISA_Layers)) then
+      LB(1:2) = lbound(SrcInitTypeData%PISA_Layers)
+      UB(1:2) = ubound(SrcInitTypeData%PISA_Layers)
+      if (.not. allocated(DstInitTypeData%PISA_Layers)) then
+         allocate(DstInitTypeData%PISA_Layers(LB(1):UB(1),LB(2):UB(2)), stat=ErrStat2)
+         if (ErrStat2 /= 0) then
+            call SetErrStat(ErrID_Fatal, 'Error allocating DstInitTypeData%PISA_Layers.', ErrStat, ErrMsg, RoutineName)
+            return
+         end if
+      end if
+      DstInitTypeData%PISA_Layers = SrcInitTypeData%PISA_Layers
+   end if
 end subroutine
 
 subroutine SD_DestroyInitType(InitTypeData, ErrStat, ErrMsg)
@@ -1745,6 +1785,9 @@ subroutine SD_DestroyInitType(InitTypeData, ErrStat, ErrMsg)
    if (allocated(InitTypeData%NodesConnE)) then
       deallocate(InitTypeData%NodesConnE)
    end if
+   if (allocated(InitTypeData%PISA_Layers)) then
+      deallocate(InitTypeData%PISA_Layers)
+   end if
 end subroutine
 
 subroutine SD_PackInitType(RF, Indata)
@@ -1813,6 +1856,10 @@ subroutine SD_PackInitType(RF, Indata)
    call RegPackAlloc(RF, InData%NodesConnN)
    call RegPackAlloc(RF, InData%NodesConnE)
    call RegPack(RF, InData%SSSum)
+   call RegPack(RF, InData%UsePISA)
+   call RegPack(RF, InData%PISA_MudlineZ)
+   call RegPack(RF, InData%NPISALayers)
+   call RegPackAlloc(RF, InData%PISA_Layers)
    if (RegCheckErr(RF, RoutineName)) return
 end subroutine
 
@@ -1885,6 +1932,10 @@ subroutine SD_UnPackInitType(RF, OutData)
    call RegUnpackAlloc(RF, OutData%NodesConnN); if (RegCheckErr(RF, RoutineName)) return
    call RegUnpackAlloc(RF, OutData%NodesConnE); if (RegCheckErr(RF, RoutineName)) return
    call RegUnpack(RF, OutData%SSSum); if (RegCheckErr(RF, RoutineName)) return
+   call RegUnpack(RF, OutData%UsePISA); if (RegCheckErr(RF, RoutineName)) return
+   call RegUnpack(RF, OutData%PISA_MudlineZ); if (RegCheckErr(RF, RoutineName)) return
+   call RegUnpack(RF, OutData%NPISALayers); if (RegCheckErr(RF, RoutineName)) return
+   call RegUnpackAlloc(RF, OutData%PISA_Layers); if (RegCheckErr(RF, RoutineName)) return
 end subroutine
 
 subroutine SD_CopyContState(SrcContStateData, DstContStateData, CtrlCode, ErrStat, ErrMsg)
@@ -2452,6 +2503,102 @@ subroutine SD_CopyMisc(SrcMiscData, DstMiscData, CtrlCode, ErrStat, ErrMsg)
       end if
       DstMiscData%UL_0m = SrcMiscData%UL_0m
    end if
+   if (allocated(SrcMiscData%PISA_Fpyx)) then
+      LB(1:1) = lbound(SrcMiscData%PISA_Fpyx)
+      UB(1:1) = ubound(SrcMiscData%PISA_Fpyx)
+      if (.not. allocated(DstMiscData%PISA_Fpyx)) then
+         allocate(DstMiscData%PISA_Fpyx(LB(1):UB(1)), stat=ErrStat2)
+         if (ErrStat2 /= 0) then
+            call SetErrStat(ErrID_Fatal, 'Error allocating DstMiscData%PISA_Fpyx.', ErrStat, ErrMsg, RoutineName)
+            return
+         end if
+      end if
+      DstMiscData%PISA_Fpyx = SrcMiscData%PISA_Fpyx
+   end if
+   if (allocated(SrcMiscData%PISA_Fpyy)) then
+      LB(1:1) = lbound(SrcMiscData%PISA_Fpyy)
+      UB(1:1) = ubound(SrcMiscData%PISA_Fpyy)
+      if (.not. allocated(DstMiscData%PISA_Fpyy)) then
+         allocate(DstMiscData%PISA_Fpyy(LB(1):UB(1)), stat=ErrStat2)
+         if (ErrStat2 /= 0) then
+            call SetErrStat(ErrID_Fatal, 'Error allocating DstMiscData%PISA_Fpyy.', ErrStat, ErrMsg, RoutineName)
+            return
+         end if
+      end if
+      DstMiscData%PISA_Fpyy = SrcMiscData%PISA_Fpyy
+   end if
+   if (allocated(SrcMiscData%PISA_Ftz)) then
+      LB(1:1) = lbound(SrcMiscData%PISA_Ftz)
+      UB(1:1) = ubound(SrcMiscData%PISA_Ftz)
+      if (.not. allocated(DstMiscData%PISA_Ftz)) then
+         allocate(DstMiscData%PISA_Ftz(LB(1):UB(1)), stat=ErrStat2)
+         if (ErrStat2 /= 0) then
+            call SetErrStat(ErrID_Fatal, 'Error allocating DstMiscData%PISA_Ftz.', ErrStat, ErrMsg, RoutineName)
+            return
+         end if
+      end if
+      DstMiscData%PISA_Ftz = SrcMiscData%PISA_Ftz
+   end if
+   if (allocated(SrcMiscData%PISA_Mmtx)) then
+      LB(1:1) = lbound(SrcMiscData%PISA_Mmtx)
+      UB(1:1) = ubound(SrcMiscData%PISA_Mmtx)
+      if (.not. allocated(DstMiscData%PISA_Mmtx)) then
+         allocate(DstMiscData%PISA_Mmtx(LB(1):UB(1)), stat=ErrStat2)
+         if (ErrStat2 /= 0) then
+            call SetErrStat(ErrID_Fatal, 'Error allocating DstMiscData%PISA_Mmtx.', ErrStat, ErrMsg, RoutineName)
+            return
+         end if
+      end if
+      DstMiscData%PISA_Mmtx = SrcMiscData%PISA_Mmtx
+   end if
+   if (allocated(SrcMiscData%PISA_Mmty)) then
+      LB(1:1) = lbound(SrcMiscData%PISA_Mmty)
+      UB(1:1) = ubound(SrcMiscData%PISA_Mmty)
+      if (.not. allocated(DstMiscData%PISA_Mmty)) then
+         allocate(DstMiscData%PISA_Mmty(LB(1):UB(1)), stat=ErrStat2)
+         if (ErrStat2 /= 0) then
+            call SetErrStat(ErrID_Fatal, 'Error allocating DstMiscData%PISA_Mmty.', ErrStat, ErrMsg, RoutineName)
+            return
+         end if
+      end if
+      DstMiscData%PISA_Mmty = SrcMiscData%PISA_Mmty
+   end if
+   if (allocated(SrcMiscData%PISA_ksecpy)) then
+      LB(1:1) = lbound(SrcMiscData%PISA_ksecpy)
+      UB(1:1) = ubound(SrcMiscData%PISA_ksecpy)
+      if (.not. allocated(DstMiscData%PISA_ksecpy)) then
+         allocate(DstMiscData%PISA_ksecpy(LB(1):UB(1)), stat=ErrStat2)
+         if (ErrStat2 /= 0) then
+            call SetErrStat(ErrID_Fatal, 'Error allocating DstMiscData%PISA_ksecpy.', ErrStat, ErrMsg, RoutineName)
+            return
+         end if
+      end if
+      DstMiscData%PISA_ksecpy = SrcMiscData%PISA_ksecpy
+   end if
+   if (allocated(SrcMiscData%PISA_ksecmt)) then
+      LB(1:1) = lbound(SrcMiscData%PISA_ksecmt)
+      UB(1:1) = ubound(SrcMiscData%PISA_ksecmt)
+      if (.not. allocated(DstMiscData%PISA_ksecmt)) then
+         allocate(DstMiscData%PISA_ksecmt(LB(1):UB(1)), stat=ErrStat2)
+         if (ErrStat2 /= 0) then
+            call SetErrStat(ErrID_Fatal, 'Error allocating DstMiscData%PISA_ksecmt.', ErrStat, ErrMsg, RoutineName)
+            return
+         end if
+      end if
+      DstMiscData%PISA_ksecmt = SrcMiscData%PISA_ksecmt
+   end if
+   if (allocated(SrcMiscData%PISA_ksectz)) then
+      LB(1:1) = lbound(SrcMiscData%PISA_ksectz)
+      UB(1:1) = ubound(SrcMiscData%PISA_ksectz)
+      if (.not. allocated(DstMiscData%PISA_ksectz)) then
+         allocate(DstMiscData%PISA_ksectz(LB(1):UB(1)), stat=ErrStat2)
+         if (ErrStat2 /= 0) then
+            call SetErrStat(ErrID_Fatal, 'Error allocating DstMiscData%PISA_ksectz.', ErrStat, ErrMsg, RoutineName)
+            return
+         end if
+      end if
+      DstMiscData%PISA_ksectz = SrcMiscData%PISA_ksectz
+   end if
 end subroutine
 
 subroutine SD_DestroyMisc(MiscData, ErrStat, ErrMsg)
@@ -2536,6 +2683,30 @@ subroutine SD_DestroyMisc(MiscData, ErrStat, ErrMsg)
    if (allocated(MiscData%UL_0m)) then
       deallocate(MiscData%UL_0m)
    end if
+   if (allocated(MiscData%PISA_Fpyx)) then
+      deallocate(MiscData%PISA_Fpyx)
+   end if
+   if (allocated(MiscData%PISA_Fpyy)) then
+      deallocate(MiscData%PISA_Fpyy)
+   end if
+   if (allocated(MiscData%PISA_Ftz)) then
+      deallocate(MiscData%PISA_Ftz)
+   end if
+   if (allocated(MiscData%PISA_Mmtx)) then
+      deallocate(MiscData%PISA_Mmtx)
+   end if
+   if (allocated(MiscData%PISA_Mmty)) then
+      deallocate(MiscData%PISA_Mmty)
+   end if
+   if (allocated(MiscData%PISA_ksecpy)) then
+      deallocate(MiscData%PISA_ksecpy)
+   end if
+   if (allocated(MiscData%PISA_ksecmt)) then
+      deallocate(MiscData%PISA_ksecmt)
+   end if
+   if (allocated(MiscData%PISA_ksectz)) then
+      deallocate(MiscData%PISA_ksectz)
+   end if
 end subroutine
 
 subroutine SD_PackMisc(RF, Indata)
@@ -2573,6 +2744,14 @@ subroutine SD_PackMisc(RF, Indata)
    call RegPackAlloc(RF, InData%FG)
    call RegPackAlloc(RF, InData%UL_SIM)
    call RegPackAlloc(RF, InData%UL_0m)
+   call RegPackAlloc(RF, InData%PISA_Fpyx)
+   call RegPackAlloc(RF, InData%PISA_Fpyy)
+   call RegPackAlloc(RF, InData%PISA_Ftz)
+   call RegPackAlloc(RF, InData%PISA_Mmtx)
+   call RegPackAlloc(RF, InData%PISA_Mmty)
+   call RegPackAlloc(RF, InData%PISA_ksecpy)
+   call RegPackAlloc(RF, InData%PISA_ksecmt)
+   call RegPackAlloc(RF, InData%PISA_ksectz)
    if (RegCheckErr(RF, RoutineName)) return
 end subroutine
 
@@ -2614,6 +2793,14 @@ subroutine SD_UnPackMisc(RF, OutData)
    call RegUnpackAlloc(RF, OutData%FG); if (RegCheckErr(RF, RoutineName)) return
    call RegUnpackAlloc(RF, OutData%UL_SIM); if (RegCheckErr(RF, RoutineName)) return
    call RegUnpackAlloc(RF, OutData%UL_0m); if (RegCheckErr(RF, RoutineName)) return
+   call RegUnpackAlloc(RF, OutData%PISA_Fpyx); if (RegCheckErr(RF, RoutineName)) return
+   call RegUnpackAlloc(RF, OutData%PISA_Fpyy); if (RegCheckErr(RF, RoutineName)) return
+   call RegUnpackAlloc(RF, OutData%PISA_Ftz); if (RegCheckErr(RF, RoutineName)) return
+   call RegUnpackAlloc(RF, OutData%PISA_Mmtx); if (RegCheckErr(RF, RoutineName)) return
+   call RegUnpackAlloc(RF, OutData%PISA_Mmty); if (RegCheckErr(RF, RoutineName)) return
+   call RegUnpackAlloc(RF, OutData%PISA_ksecpy); if (RegCheckErr(RF, RoutineName)) return
+   call RegUnpackAlloc(RF, OutData%PISA_ksecmt); if (RegCheckErr(RF, RoutineName)) return
+   call RegUnpackAlloc(RF, OutData%PISA_ksectz); if (RegCheckErr(RF, RoutineName)) return
 end subroutine
 
 subroutine SD_CopyParam(SrcParamData, DstParamData, CtrlCode, ErrStat, ErrMsg)
@@ -3482,6 +3669,188 @@ subroutine SD_CopyParam(SrcParamData, DstParamData, CtrlCode, ErrStat, ErrMsg)
    DstParamData%Jac_ny = SrcParamData%Jac_ny
    DstParamData%Jac_nx = SrcParamData%Jac_nx
    DstParamData%RotStates = SrcParamData%RotStates
+   DstParamData%UsePISA = SrcParamData%UsePISA
+   DstParamData%nPISANodes = SrcParamData%nPISANodes
+   if (allocated(SrcParamData%PISA_Nidx)) then
+      LB(1:1) = lbound(SrcParamData%PISA_Nidx)
+      UB(1:1) = ubound(SrcParamData%PISA_Nidx)
+      if (.not. allocated(DstParamData%PISA_Nidx)) then
+         allocate(DstParamData%PISA_Nidx(LB(1):UB(1)), stat=ErrStat2)
+         if (ErrStat2 /= 0) then
+            call SetErrStat(ErrID_Fatal, 'Error allocating DstParamData%PISA_Nidx.', ErrStat, ErrMsg, RoutineName)
+            return
+         end if
+      end if
+      DstParamData%PISA_Nidx = SrcParamData%PISA_Nidx
+   end if
+   if (allocated(SrcParamData%PISA_Depth)) then
+      LB(1:1) = lbound(SrcParamData%PISA_Depth)
+      UB(1:1) = ubound(SrcParamData%PISA_Depth)
+      if (.not. allocated(DstParamData%PISA_Depth)) then
+         allocate(DstParamData%PISA_Depth(LB(1):UB(1)), stat=ErrStat2)
+         if (ErrStat2 /= 0) then
+            call SetErrStat(ErrID_Fatal, 'Error allocating DstParamData%PISA_Depth.', ErrStat, ErrMsg, RoutineName)
+            return
+         end if
+      end if
+      DstParamData%PISA_Depth = SrcParamData%PISA_Depth
+   end if
+   if (allocated(SrcParamData%PISA_Dz)) then
+      LB(1:1) = lbound(SrcParamData%PISA_Dz)
+      UB(1:1) = ubound(SrcParamData%PISA_Dz)
+      if (.not. allocated(DstParamData%PISA_Dz)) then
+         allocate(DstParamData%PISA_Dz(LB(1):UB(1)), stat=ErrStat2)
+         if (ErrStat2 /= 0) then
+            call SetErrStat(ErrID_Fatal, 'Error allocating DstParamData%PISA_Dz.', ErrStat, ErrMsg, RoutineName)
+            return
+         end if
+      end if
+      DstParamData%PISA_Dz = SrcParamData%PISA_Dz
+   end if
+   if (allocated(SrcParamData%PISA_Hu)) then
+      LB(1:1) = lbound(SrcParamData%PISA_Hu)
+      UB(1:1) = ubound(SrcParamData%PISA_Hu)
+      if (.not. allocated(DstParamData%PISA_Hu)) then
+         allocate(DstParamData%PISA_Hu(LB(1):UB(1)), stat=ErrStat2)
+         if (ErrStat2 /= 0) then
+            call SetErrStat(ErrID_Fatal, 'Error allocating DstParamData%PISA_Hu.', ErrStat, ErrMsg, RoutineName)
+            return
+         end if
+      end if
+      DstParamData%PISA_Hu = SrcParamData%PISA_Hu
+   end if
+   if (allocated(SrcParamData%PISA_yref)) then
+      LB(1:1) = lbound(SrcParamData%PISA_yref)
+      UB(1:1) = ubound(SrcParamData%PISA_yref)
+      if (.not. allocated(DstParamData%PISA_yref)) then
+         allocate(DstParamData%PISA_yref(LB(1):UB(1)), stat=ErrStat2)
+         if (ErrStat2 /= 0) then
+            call SetErrStat(ErrID_Fatal, 'Error allocating DstParamData%PISA_yref.', ErrStat, ErrMsg, RoutineName)
+            return
+         end if
+      end if
+      DstParamData%PISA_yref = SrcParamData%PISA_yref
+   end if
+   if (allocated(SrcParamData%PISA_npy)) then
+      LB(1:1) = lbound(SrcParamData%PISA_npy)
+      UB(1:1) = ubound(SrcParamData%PISA_npy)
+      if (.not. allocated(DstParamData%PISA_npy)) then
+         allocate(DstParamData%PISA_npy(LB(1):UB(1)), stat=ErrStat2)
+         if (ErrStat2 /= 0) then
+            call SetErrStat(ErrID_Fatal, 'Error allocating DstParamData%PISA_npy.', ErrStat, ErrMsg, RoutineName)
+            return
+         end if
+      end if
+      DstParamData%PISA_npy = SrcParamData%PISA_npy
+   end if
+   if (allocated(SrcParamData%PISA_Mu)) then
+      LB(1:1) = lbound(SrcParamData%PISA_Mu)
+      UB(1:1) = ubound(SrcParamData%PISA_Mu)
+      if (.not. allocated(DstParamData%PISA_Mu)) then
+         allocate(DstParamData%PISA_Mu(LB(1):UB(1)), stat=ErrStat2)
+         if (ErrStat2 /= 0) then
+            call SetErrStat(ErrID_Fatal, 'Error allocating DstParamData%PISA_Mu.', ErrStat, ErrMsg, RoutineName)
+            return
+         end if
+      end if
+      DstParamData%PISA_Mu = SrcParamData%PISA_Mu
+   end if
+   if (allocated(SrcParamData%PISA_tref)) then
+      LB(1:1) = lbound(SrcParamData%PISA_tref)
+      UB(1:1) = ubound(SrcParamData%PISA_tref)
+      if (.not. allocated(DstParamData%PISA_tref)) then
+         allocate(DstParamData%PISA_tref(LB(1):UB(1)), stat=ErrStat2)
+         if (ErrStat2 /= 0) then
+            call SetErrStat(ErrID_Fatal, 'Error allocating DstParamData%PISA_tref.', ErrStat, ErrMsg, RoutineName)
+            return
+         end if
+      end if
+      DstParamData%PISA_tref = SrcParamData%PISA_tref
+   end if
+   if (allocated(SrcParamData%PISA_nmt)) then
+      LB(1:1) = lbound(SrcParamData%PISA_nmt)
+      UB(1:1) = ubound(SrcParamData%PISA_nmt)
+      if (.not. allocated(DstParamData%PISA_nmt)) then
+         allocate(DstParamData%PISA_nmt(LB(1):UB(1)), stat=ErrStat2)
+         if (ErrStat2 /= 0) then
+            call SetErrStat(ErrID_Fatal, 'Error allocating DstParamData%PISA_nmt.', ErrStat, ErrMsg, RoutineName)
+            return
+         end if
+      end if
+      DstParamData%PISA_nmt = SrcParamData%PISA_nmt
+   end if
+   if (allocated(SrcParamData%PISA_Vu)) then
+      LB(1:1) = lbound(SrcParamData%PISA_Vu)
+      UB(1:1) = ubound(SrcParamData%PISA_Vu)
+      if (.not. allocated(DstParamData%PISA_Vu)) then
+         allocate(DstParamData%PISA_Vu(LB(1):UB(1)), stat=ErrStat2)
+         if (ErrStat2 /= 0) then
+            call SetErrStat(ErrID_Fatal, 'Error allocating DstParamData%PISA_Vu.', ErrStat, ErrMsg, RoutineName)
+            return
+         end if
+      end if
+      DstParamData%PISA_Vu = SrcParamData%PISA_Vu
+   end if
+   if (allocated(SrcParamData%PISA_vref)) then
+      LB(1:1) = lbound(SrcParamData%PISA_vref)
+      UB(1:1) = ubound(SrcParamData%PISA_vref)
+      if (.not. allocated(DstParamData%PISA_vref)) then
+         allocate(DstParamData%PISA_vref(LB(1):UB(1)), stat=ErrStat2)
+         if (ErrStat2 /= 0) then
+            call SetErrStat(ErrID_Fatal, 'Error allocating DstParamData%PISA_vref.', ErrStat, ErrMsg, RoutineName)
+            return
+         end if
+      end if
+      DstParamData%PISA_vref = SrcParamData%PISA_vref
+   end if
+   if (allocated(SrcParamData%PISA_ntz)) then
+      LB(1:1) = lbound(SrcParamData%PISA_ntz)
+      UB(1:1) = ubound(SrcParamData%PISA_ntz)
+      if (.not. allocated(DstParamData%PISA_ntz)) then
+         allocate(DstParamData%PISA_ntz(LB(1):UB(1)), stat=ErrStat2)
+         if (ErrStat2 /= 0) then
+            call SetErrStat(ErrID_Fatal, 'Error allocating DstParamData%PISA_ntz.', ErrStat, ErrMsg, RoutineName)
+            return
+         end if
+      end if
+      DstParamData%PISA_ntz = SrcParamData%PISA_ntz
+   end if
+   if (allocated(SrcParamData%PISA_kpy0)) then
+      LB(1:1) = lbound(SrcParamData%PISA_kpy0)
+      UB(1:1) = ubound(SrcParamData%PISA_kpy0)
+      if (.not. allocated(DstParamData%PISA_kpy0)) then
+         allocate(DstParamData%PISA_kpy0(LB(1):UB(1)), stat=ErrStat2)
+         if (ErrStat2 /= 0) then
+            call SetErrStat(ErrID_Fatal, 'Error allocating DstParamData%PISA_kpy0.', ErrStat, ErrMsg, RoutineName)
+            return
+         end if
+      end if
+      DstParamData%PISA_kpy0 = SrcParamData%PISA_kpy0
+   end if
+   if (allocated(SrcParamData%PISA_kmt0)) then
+      LB(1:1) = lbound(SrcParamData%PISA_kmt0)
+      UB(1:1) = ubound(SrcParamData%PISA_kmt0)
+      if (.not. allocated(DstParamData%PISA_kmt0)) then
+         allocate(DstParamData%PISA_kmt0(LB(1):UB(1)), stat=ErrStat2)
+         if (ErrStat2 /= 0) then
+            call SetErrStat(ErrID_Fatal, 'Error allocating DstParamData%PISA_kmt0.', ErrStat, ErrMsg, RoutineName)
+            return
+         end if
+      end if
+      DstParamData%PISA_kmt0 = SrcParamData%PISA_kmt0
+   end if
+   if (allocated(SrcParamData%PISA_ktz0)) then
+      LB(1:1) = lbound(SrcParamData%PISA_ktz0)
+      UB(1:1) = ubound(SrcParamData%PISA_ktz0)
+      if (.not. allocated(DstParamData%PISA_ktz0)) then
+         allocate(DstParamData%PISA_ktz0(LB(1):UB(1)), stat=ErrStat2)
+         if (ErrStat2 /= 0) then
+            call SetErrStat(ErrID_Fatal, 'Error allocating DstParamData%PISA_ktz0.', ErrStat, ErrMsg, RoutineName)
+            return
+         end if
+      end if
+      DstParamData%PISA_ktz0 = SrcParamData%PISA_ktz0
+   end if
 end subroutine
 
 subroutine SD_DestroyParam(ParamData, ErrStat, ErrMsg)
@@ -3732,6 +4101,51 @@ subroutine SD_DestroyParam(ParamData, ErrStat, ErrMsg)
    if (allocated(ParamData%du)) then
       deallocate(ParamData%du)
    end if
+   if (allocated(ParamData%PISA_Nidx)) then
+      deallocate(ParamData%PISA_Nidx)
+   end if
+   if (allocated(ParamData%PISA_Depth)) then
+      deallocate(ParamData%PISA_Depth)
+   end if
+   if (allocated(ParamData%PISA_Dz)) then
+      deallocate(ParamData%PISA_Dz)
+   end if
+   if (allocated(ParamData%PISA_Hu)) then
+      deallocate(ParamData%PISA_Hu)
+   end if
+   if (allocated(ParamData%PISA_yref)) then
+      deallocate(ParamData%PISA_yref)
+   end if
+   if (allocated(ParamData%PISA_npy)) then
+      deallocate(ParamData%PISA_npy)
+   end if
+   if (allocated(ParamData%PISA_Mu)) then
+      deallocate(ParamData%PISA_Mu)
+   end if
+   if (allocated(ParamData%PISA_tref)) then
+      deallocate(ParamData%PISA_tref)
+   end if
+   if (allocated(ParamData%PISA_nmt)) then
+      deallocate(ParamData%PISA_nmt)
+   end if
+   if (allocated(ParamData%PISA_Vu)) then
+      deallocate(ParamData%PISA_Vu)
+   end if
+   if (allocated(ParamData%PISA_vref)) then
+      deallocate(ParamData%PISA_vref)
+   end if
+   if (allocated(ParamData%PISA_ntz)) then
+      deallocate(ParamData%PISA_ntz)
+   end if
+   if (allocated(ParamData%PISA_kpy0)) then
+      deallocate(ParamData%PISA_kpy0)
+   end if
+   if (allocated(ParamData%PISA_kmt0)) then
+      deallocate(ParamData%PISA_kmt0)
+   end if
+   if (allocated(ParamData%PISA_ktz0)) then
+      deallocate(ParamData%PISA_ktz0)
+   end if
 end subroutine
 
 subroutine SD_PackParam(RF, Indata)
@@ -3907,6 +4321,23 @@ subroutine SD_PackParam(RF, Indata)
    call RegPack(RF, InData%Jac_ny)
    call RegPack(RF, InData%Jac_nx)
    call RegPack(RF, InData%RotStates)
+   call RegPack(RF, InData%UsePISA)
+   call RegPack(RF, InData%nPISANodes)
+   call RegPackAlloc(RF, InData%PISA_Nidx)
+   call RegPackAlloc(RF, InData%PISA_Depth)
+   call RegPackAlloc(RF, InData%PISA_Dz)
+   call RegPackAlloc(RF, InData%PISA_Hu)
+   call RegPackAlloc(RF, InData%PISA_yref)
+   call RegPackAlloc(RF, InData%PISA_npy)
+   call RegPackAlloc(RF, InData%PISA_Mu)
+   call RegPackAlloc(RF, InData%PISA_tref)
+   call RegPackAlloc(RF, InData%PISA_nmt)
+   call RegPackAlloc(RF, InData%PISA_Vu)
+   call RegPackAlloc(RF, InData%PISA_vref)
+   call RegPackAlloc(RF, InData%PISA_ntz)
+   call RegPackAlloc(RF, InData%PISA_kpy0)
+   call RegPackAlloc(RF, InData%PISA_kmt0)
+   call RegPackAlloc(RF, InData%PISA_ktz0)
    if (RegCheckErr(RF, RoutineName)) return
 end subroutine
 
@@ -4113,6 +4544,23 @@ subroutine SD_UnPackParam(RF, OutData)
    call RegUnpack(RF, OutData%Jac_ny); if (RegCheckErr(RF, RoutineName)) return
    call RegUnpack(RF, OutData%Jac_nx); if (RegCheckErr(RF, RoutineName)) return
    call RegUnpack(RF, OutData%RotStates); if (RegCheckErr(RF, RoutineName)) return
+   call RegUnpack(RF, OutData%UsePISA); if (RegCheckErr(RF, RoutineName)) return
+   call RegUnpack(RF, OutData%nPISANodes); if (RegCheckErr(RF, RoutineName)) return
+   call RegUnpackAlloc(RF, OutData%PISA_Nidx); if (RegCheckErr(RF, RoutineName)) return
+   call RegUnpackAlloc(RF, OutData%PISA_Depth); if (RegCheckErr(RF, RoutineName)) return
+   call RegUnpackAlloc(RF, OutData%PISA_Dz); if (RegCheckErr(RF, RoutineName)) return
+   call RegUnpackAlloc(RF, OutData%PISA_Hu); if (RegCheckErr(RF, RoutineName)) return
+   call RegUnpackAlloc(RF, OutData%PISA_yref); if (RegCheckErr(RF, RoutineName)) return
+   call RegUnpackAlloc(RF, OutData%PISA_npy); if (RegCheckErr(RF, RoutineName)) return
+   call RegUnpackAlloc(RF, OutData%PISA_Mu); if (RegCheckErr(RF, RoutineName)) return
+   call RegUnpackAlloc(RF, OutData%PISA_tref); if (RegCheckErr(RF, RoutineName)) return
+   call RegUnpackAlloc(RF, OutData%PISA_nmt); if (RegCheckErr(RF, RoutineName)) return
+   call RegUnpackAlloc(RF, OutData%PISA_Vu); if (RegCheckErr(RF, RoutineName)) return
+   call RegUnpackAlloc(RF, OutData%PISA_vref); if (RegCheckErr(RF, RoutineName)) return
+   call RegUnpackAlloc(RF, OutData%PISA_ntz); if (RegCheckErr(RF, RoutineName)) return
+   call RegUnpackAlloc(RF, OutData%PISA_kpy0); if (RegCheckErr(RF, RoutineName)) return
+   call RegUnpackAlloc(RF, OutData%PISA_kmt0); if (RegCheckErr(RF, RoutineName)) return
+   call RegUnpackAlloc(RF, OutData%PISA_ktz0); if (RegCheckErr(RF, RoutineName)) return
 end subroutine
 
 subroutine SD_CopyInput(SrcInputData, DstInputData, CtrlCode, ErrStat, ErrMsg)

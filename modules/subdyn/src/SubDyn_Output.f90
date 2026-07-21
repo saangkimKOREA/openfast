@@ -23,6 +23,7 @@ MODULE SubDyn_Output
    USE SD_FEM
    USE SubDyn_Output_Params, only: MNfmKe, MNfmMe, MNTDss, MNRDe, MNTRAe, IntfSS, IntfTRss, IntfTRAss, ReactSS, OutStrLenM1
    USE SubDyn_Output_Params, only: ParamIndxAry, ParamUnitsAry, ValidParamAry, SSqm01, SSqmd01, SSqmdd01, MaxOutPts
+   USE SubDyn_Output_Params, only: PISAFpyx, PISAFpyy, PISAFtz, PISAMmtx, PISAMmty, PISAKpy, PISAKmt, PISAKtz
 
    IMPLICIT NONE
 
@@ -427,7 +428,29 @@ SUBROUTINE SDOut_MapOutputs(u,p,x, y, m, AllOuts, ErrStat, ErrMsg )
       AllOuts( ReactSS(1:nDOFL_TP) ) = matmul(p%TIreact,ReactNs)
    ENDIF
    if (allocated(ReactNs)) deallocate(ReactNs)
+
+   ! --- PISA aggregate outputs
+   call FillPISAAllOuts(p, m, AllOuts)
 contains
+
+   ! --- PISA aggregate output channels: sum per-node nonlinear forces/secant stiffnesses
+   SUBROUTINE FillPISAAllOuts(p, m, AllOuts)
+      TYPE(SD_ParameterType), INTENT(IN   ) :: p
+      TYPE(SD_MiscVarType),   INTENT(IN   ) :: m
+      REAL(ReKi),              INTENT(INOUT) :: AllOuts(0:)
+      IF (.NOT. p%UsePISA .OR. p%nPISANodes < 1) RETURN
+      IF (.NOT. ALLOCATED(m%PISA_Fpyx)) RETURN
+      AllOuts(PISAFpyx) = SUM(m%PISA_Fpyx)
+      AllOuts(PISAFpyy) = SUM(m%PISA_Fpyy)
+      AllOuts(PISAFtz)  = SUM(m%PISA_Ftz)
+      AllOuts(PISAMmtx) = SUM(m%PISA_Mmtx)
+      AllOuts(PISAMmty) = SUM(m%PISA_Mmty)
+      IF (ALLOCATED(m%PISA_ksecpy)) THEN
+         AllOuts(PISAKpy) = SUM(m%PISA_ksecpy)
+         AllOuts(PISAKmt) = SUM(m%PISA_ksecmt)
+         AllOuts(PISAKtz) = SUM(m%PISA_ksectz)
+      END IF
+   END SUBROUTINE FillPISAAllOuts
 
    subroutine ElementForce(pLst, iiNode, JJ, FM_elm, FK_elm, sgn, DIRCOS, bUseInputDirCos)
       type(MeshAuxDataType), intent(in)          :: pLst   !< Info for one member output
@@ -782,8 +805,28 @@ SUBROUTINE SDOut_ChkOutLst( OutList, p, ErrStat, ErrMsg )
       end if
       
       CALL Conv2UC( OutListTmp )    ! Convert OutListTmp to upper case
-   
-   
+
+      ! --- Special handling for PISA aggregate output channels (not in ValidParamAry,
+      !     since they are dynamically-sized/optional and bypass the generated lookup table)
+      SELECT CASE (TRIM(OutListTmp))
+      CASE ('PISAFPYX')
+         p%OutParam(I)%Indx = PISAFpyx; p%OutParam(I)%Units = '(N)      '; CYCLE
+      CASE ('PISAFPYY')
+         p%OutParam(I)%Indx = PISAFpyy; p%OutParam(I)%Units = '(N)      '; CYCLE
+      CASE ('PISAFTZ')
+         p%OutParam(I)%Indx = PISAFtz;  p%OutParam(I)%Units = '(N)      '; CYCLE
+      CASE ('PISAMMTX')
+         p%OutParam(I)%Indx = PISAMmtx; p%OutParam(I)%Units = '(N*m)    '; CYCLE
+      CASE ('PISAMMTY')
+         p%OutParam(I)%Indx = PISAMmty; p%OutParam(I)%Units = '(N*m)    '; CYCLE
+      CASE ('PISAKPY')
+         p%OutParam(I)%Indx = PISAKpy;  p%OutParam(I)%Units = '(N/m)    '; CYCLE
+      CASE ('PISAKMT')
+         p%OutParam(I)%Indx = PISAKmt;  p%OutParam(I)%Units = '(N*m/rad)'; CYCLE
+      CASE ('PISAKTZ')
+         p%OutParam(I)%Indx = PISAKtz;  p%OutParam(I)%Units = '(N/m)    '; CYCLE
+      END SELECT
+
       Indx =  IndexCharAry( OutListTmp(1:OutStrLenM1), ValidParamAry )
       
       IF ( CheckOutListAgain .AND. Indx < 1 ) THEN    ! Let's assume that "M" really meant "minus" and then test again         

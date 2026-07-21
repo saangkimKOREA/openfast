@@ -25,6 +25,7 @@ MODULE SD_FEM
  
   INTEGER(IntKi),   PARAMETER  :: MaxMemJnt       = 20                    ! Maximum number of members at one joint
   INTEGER(IntKi),   PARAMETER  :: nDOFL_TP        = 6  !TODO rename me    ! 6 degrees of freedom (length of u subarray [UTP])
+  INTEGER(IntKi),   PARAMETER  :: PISALayerCol    = 10                    ! Number of columns in PISA layer table (Depth, H_ult, y_ref, n_py, M_ult, t_ref, n_mt, V_ult, v_ref, n_tz)
    
   ! values of these parameters are ordered by their place in SubDyn input file:
   INTEGER(IntKi),   PARAMETER  :: JointsCol       = 9                    ! Number of columns in Joints (JointID, JointXss, JointYss, JointZss, JointType, JointDirX JointDirY JointDirZ JointStiff)
@@ -2647,5 +2648,324 @@ SUBROUTINE rigidBodyMassMatrix(m, Jxx, Jyy, Jzz, Jxy, Jxz, Jyz, x, y, z, M66)
    M66(5 , :)=(/  z*m    , 0._ReKi , -x*m    , Jxy - m*x*y         , Jyy + m*(x**2+z**2) , Jyz  - m*y*z         /)
    M66(6 , :)=(/ -y*m    , x*m     , 0._ReKi , Jxz - m*x*z         , Jyz - m*y*z         , Jzz  + m*(x**2+y**2) /)
 END SUBROUTINE
+
+!> Map PISA layer table to SubDyn pile nodes and populate ParameterType arrays.
+!! Called once during SD_Init after DistributeDOF so node coordinates are known.
+!! Forward-ported from tipota/subDyn snapshot (2026-07-21) onto the current NWTC/SubDyn
+!! framework; physics unchanged from the original Option-B residual-force design.
+SUBROUTINE InitPISAParams(Init, p, ErrStat, ErrMsg)
+   TYPE(SD_InitType),      INTENT(IN   ) :: Init
+   TYPE(SD_ParameterType), INTENT(INOUT) :: p
+   INTEGER(IntKi),         INTENT(  OUT) :: ErrStat
+   CHARACTER(*),           INTENT(  OUT) :: ErrMsg
+   INTEGER(IntKi)              :: iNode, nBelow, I, J, iP, ErrStat2
+   CHARACTER(ErrMsgLen)        :: ErrMsg2
+   INTEGER(IntKi), ALLOCATABLE :: belowIdx(:)
+   REAL(ReKi)                  :: depth, dUp, dDown
+
+   ErrStat = ErrID_None
+   ErrMsg  = ''
+   p%UsePISA    = .FALSE.
+   p%nPISANodes = 0
+
+   IF (.NOT. Init%UsePISA .OR. Init%NPISALayers < 2) RETURN
+
+   ! --- Count free interior nodes at or below mudline (exclude reaction/interface nodes)
+   nBelow = 0
+   DO iNode = 1, p%nNodes
+      IF (Init%Nodes(iNode, 4) <= Init%PISA_MudlineZ .AND. &
+          .NOT. isRINode(NINT(Init%Nodes(iNode,1)), p)) nBelow = nBelow + 1
+   END DO
+
+   IF (nBelow == 0) THEN
+      CALL SetErrStat(ErrID_Warn, 'PISA enabled but no free interior SubDyn nodes found at or below mudline (MudlineZ='// &
+         trim(Num2LStr(Init%PISA_MudlineZ))//'m). Check MudlineZ in input file.', ErrStat, ErrMsg, 'InitPISAParams')
+      RETURN
+   END IF
+
+   ! --- Collect and sort node indices by Z (descending Z = ascending depth)
+   CALL AllocAry(belowIdx, nBelow, 'belowIdx', ErrStat2, ErrMsg2)
+   CALL SetErrStat(ErrStat2, ErrMsg2, ErrStat, ErrMsg, 'InitPISAParams'); if (ErrStat>=AbortErrLev) return
+   J = 0
+   DO iNode = 1, p%nNodes
+      IF (Init%Nodes(iNode, 4) <= Init%PISA_MudlineZ .AND. &
+          .NOT. isRINode(NINT(Init%Nodes(iNode,1)), p)) THEN
+         J = J + 1; belowIdx(J) = iNode
+      END IF
+   END DO
+   DO I = 2, nBelow  ! insertion sort: largest Z (shallowest) first
+      J = I
+      DO WHILE (J > 1 .AND. Init%Nodes(belowIdx(J),4) > Init%Nodes(belowIdx(J-1),4))
+         CALL SwapInt(belowIdx(J), belowIdx(J-1)); J = J - 1
+      END DO
+   END DO
+
+   ! --- Allocate parameter arrays
+   p%nPISANodes = nBelow
+   CALL AllocAry(p%PISA_Nidx,  nBelow, 'p%PISA_Nidx',  ErrStat2, ErrMsg2); CALL SetErrStat(ErrStat2, ErrMsg2, ErrStat, ErrMsg, 'InitPISAParams'); if (ErrStat>=AbortErrLev) return
+   CALL AllocAry(p%PISA_Depth, nBelow, 'p%PISA_Depth', ErrStat2, ErrMsg2); CALL SetErrStat(ErrStat2, ErrMsg2, ErrStat, ErrMsg, 'InitPISAParams'); if (ErrStat>=AbortErrLev) return
+   CALL AllocAry(p%PISA_Dz,    nBelow, 'p%PISA_Dz',    ErrStat2, ErrMsg2); CALL SetErrStat(ErrStat2, ErrMsg2, ErrStat, ErrMsg, 'InitPISAParams'); if (ErrStat>=AbortErrLev) return
+   CALL AllocAry(p%PISA_Hu,    nBelow, 'p%PISA_Hu',    ErrStat2, ErrMsg2); CALL SetErrStat(ErrStat2, ErrMsg2, ErrStat, ErrMsg, 'InitPISAParams'); if (ErrStat>=AbortErrLev) return
+   CALL AllocAry(p%PISA_yref,  nBelow, 'p%PISA_yref',  ErrStat2, ErrMsg2); CALL SetErrStat(ErrStat2, ErrMsg2, ErrStat, ErrMsg, 'InitPISAParams'); if (ErrStat>=AbortErrLev) return
+   CALL AllocAry(p%PISA_npy,   nBelow, 'p%PISA_npy',   ErrStat2, ErrMsg2); CALL SetErrStat(ErrStat2, ErrMsg2, ErrStat, ErrMsg, 'InitPISAParams'); if (ErrStat>=AbortErrLev) return
+   CALL AllocAry(p%PISA_Mu,    nBelow, 'p%PISA_Mu',    ErrStat2, ErrMsg2); CALL SetErrStat(ErrStat2, ErrMsg2, ErrStat, ErrMsg, 'InitPISAParams'); if (ErrStat>=AbortErrLev) return
+   CALL AllocAry(p%PISA_tref,  nBelow, 'p%PISA_tref',  ErrStat2, ErrMsg2); CALL SetErrStat(ErrStat2, ErrMsg2, ErrStat, ErrMsg, 'InitPISAParams'); if (ErrStat>=AbortErrLev) return
+   CALL AllocAry(p%PISA_nmt,   nBelow, 'p%PISA_nmt',   ErrStat2, ErrMsg2); CALL SetErrStat(ErrStat2, ErrMsg2, ErrStat, ErrMsg, 'InitPISAParams'); if (ErrStat>=AbortErrLev) return
+   CALL AllocAry(p%PISA_Vu,    nBelow, 'p%PISA_Vu',    ErrStat2, ErrMsg2); CALL SetErrStat(ErrStat2, ErrMsg2, ErrStat, ErrMsg, 'InitPISAParams'); if (ErrStat>=AbortErrLev) return
+   CALL AllocAry(p%PISA_vref,  nBelow, 'p%PISA_vref',  ErrStat2, ErrMsg2); CALL SetErrStat(ErrStat2, ErrMsg2, ErrStat, ErrMsg, 'InitPISAParams'); if (ErrStat>=AbortErrLev) return
+   CALL AllocAry(p%PISA_ntz,   nBelow, 'p%PISA_ntz',   ErrStat2, ErrMsg2); CALL SetErrStat(ErrStat2, ErrMsg2, ErrStat, ErrMsg, 'InitPISAParams'); if (ErrStat>=AbortErrLev) return
+   CALL AllocAry(p%PISA_kpy0, nBelow, 'p%PISA_kpy0',  ErrStat2, ErrMsg2); CALL SetErrStat(ErrStat2, ErrMsg2, ErrStat, ErrMsg, 'InitPISAParams'); if (ErrStat>=AbortErrLev) return
+   CALL AllocAry(p%PISA_kmt0, nBelow, 'p%PISA_kmt0',  ErrStat2, ErrMsg2); CALL SetErrStat(ErrStat2, ErrMsg2, ErrStat, ErrMsg, 'InitPISAParams'); if (ErrStat>=AbortErrLev) return
+   CALL AllocAry(p%PISA_ktz0, nBelow, 'p%PISA_ktz0',  ErrStat2, ErrMsg2); CALL SetErrStat(ErrStat2, ErrMsg2, ErrStat, ErrMsg, 'InitPISAParams'); if (ErrStat>=AbortErrLev) return
+
+   ! --- Fill node indices, depths and tributary lengths
+   DO iP = 1, nBelow
+      p%PISA_Nidx(iP)  = belowIdx(iP)
+      p%PISA_Depth(iP) = Init%PISA_MudlineZ - Init%Nodes(belowIdx(iP), 4)  ! positive downward
+   END DO
+   DO iP = 1, nBelow
+      dUp   = 0.0_ReKi; dDown = 0.0_ReKi
+      IF (iP > 1)       dUp   = p%PISA_Depth(iP) - p%PISA_Depth(iP-1)
+      IF (iP < nBelow)  dDown = p%PISA_Depth(iP+1) - p%PISA_Depth(iP)
+      p%PISA_Dz(iP) = 0.5_ReKi * (dUp + dDown)
+   END DO
+
+   ! --- Interpolate PISA layer curve parameters and compute initial tangent stiffness
+   DO iP = 1, nBelow
+      depth = p%PISA_Depth(iP)
+      CALL InterpPISALayer(Init%PISA_Layers, Init%NPISALayers, depth, &
+                            p%PISA_Hu(iP),   p%PISA_yref(iP),  p%PISA_npy(iP), &
+                            p%PISA_Mu(iP),   p%PISA_tref(iP),  p%PISA_nmt(iP), &
+                            p%PISA_Vu(iP),   p%PISA_vref(iP),  p%PISA_ntz(iP))
+      ! Initial tangent stiffness: k0 = dF/du|u=0 = Fu / (uref * n)
+      p%PISA_kpy0(iP) = p%PISA_Hu(iP)  / (p%PISA_yref(iP) * p%PISA_npy(iP))
+      p%PISA_kmt0(iP) = p%PISA_Mu(iP)  / (p%PISA_tref(iP) * p%PISA_nmt(iP))
+      p%PISA_ktz0(iP) = p%PISA_Vu(iP)  / (p%PISA_vref(iP) * p%PISA_ntz(iP))
+   END DO
+
+   p%UsePISA = .TRUE.
+   CALL WrScr('   PISA nonlinear soil springs: '//trim(Num2LStr(nBelow))// &
+              ' pile nodes identified (Z <= '//trim(Num2LStr(Init%PISA_MudlineZ))//'m)')
+
+   IF (allocated(belowIdx)) deallocate(belowIdx)
+
+CONTAINS
+   SUBROUTINE SwapInt(a, b)
+      INTEGER(IntKi), INTENT(INOUT) :: a, b
+      INTEGER(IntKi) :: tmp
+      tmp=a; a=b; b=tmp
+   END SUBROUTINE
+
+   LOGICAL FUNCTION isRINode(nodeID, p_)
+      INTEGER(IntKi),          INTENT(IN) :: nodeID
+      TYPE(SD_ParameterType),  INTENT(IN) :: p_
+      INTEGER(IntKi) :: iC, iI
+      isRINode = .FALSE.
+      DO iC = 1, p_%nNodes_C
+         IF (p_%Nodes_C(iC,1) == nodeID) THEN; isRINode = .TRUE.; RETURN; END IF
+      END DO
+      DO iI = 1, p_%nNodes_I
+         IF (p_%Nodes_I(iI,1) == nodeID) THEN; isRINode = .TRUE.; RETURN; END IF
+      END DO
+   END FUNCTION isRINode
+END SUBROUTINE InitPISAParams
+
+!> Insert initial-tangent PISA spring stiffness into the global K matrix so that
+!! the Craig-Bampton reduction captures linearized soil stiffness in the mode shapes.
+!! Called after AssembleKM and InsertSoilMatrices, before DirectElimination.
+SUBROUTINE InsertPISALinearK(K, p, ErrStat, ErrMsg)
+   REAL(FEKi),             DIMENSION(:,:), INTENT(INOUT) :: K       !< Global stiffness matrix (nDOF x nDOF)
+   TYPE(SD_ParameterType), target,         INTENT(IN   ) :: p
+   INTEGER(IntKi),                         INTENT(  OUT) :: ErrStat
+   CHARACTER(*),                           INTENT(  OUT) :: ErrMsg
+   INTEGER(IntKi), POINTER :: DOFList(:)
+   INTEGER(IntKi) :: iP, iN, iM, nM
+   REAL(FEKi)     :: kpy, kmt, ktz
+
+   ErrStat = ErrID_None
+   ErrMsg  = ''
+   IF (.NOT. p%UsePISA) RETURN
+
+   DO iP = 1, p%nPISANodes
+      iN      = p%PISA_Nidx(iP)
+      DOFList => p%NodesDOF(iN)%List
+      nM      = (SIZE(DOFList) - 3) / 3
+
+      kpy = REAL(p%PISA_kpy0(iP) * p%PISA_Dz(iP), FEKi)
+      ktz = REAL(p%PISA_ktz0(iP) * p%PISA_Dz(iP), FEKi)
+      kmt = REAL(p%PISA_kmt0(iP) * p%PISA_Dz(iP) / REAL(MAX(nM,1), ReKi), FEKi)
+
+      ! Lateral springs (DOFs 1 & 2 = shared translations tx, ty)
+      K(DOFList(1), DOFList(1)) = K(DOFList(1), DOFList(1)) + kpy
+      K(DOFList(2), DOFList(2)) = K(DOFList(2), DOFList(2)) + kpy
+      ! Axial spring (DOF 3 = shared translation tz)
+      K(DOFList(3), DOFList(3)) = K(DOFList(3), DOFList(3)) + ktz
+      ! Rotational springs (rx, ry split across member DOFs)
+      DO iM = 0, nM - 1
+         K(DOFList(4 + 3*iM), DOFList(4 + 3*iM)) = K(DOFList(4 + 3*iM), DOFList(4 + 3*iM)) + kmt
+         K(DOFList(5 + 3*iM), DOFList(5 + 3*iM)) = K(DOFList(5 + 3*iM), DOFList(5 + 3*iM)) + kmt
+      END DO
+   END DO
+END SUBROUTINE InsertPISALinearK
+
+!> Linear interpolation of PISA hyperbolic curve parameters at a given depth below mudline.
+!! Clamps to table bounds if depth is outside the defined range.
+SUBROUTINE InterpPISALayer(Layers, NLayers, depth, Hu, yref, npy, Mu, tref, nmt, Vu, vref, ntz)
+   REAL(ReKi),     INTENT(IN)  :: Layers(:,:)  ! (NLayers, PISALayerCol)
+   INTEGER(IntKi), INTENT(IN)  :: NLayers
+   REAL(ReKi),     INTENT(IN)  :: depth        ! depth below mudline [m, positive downward]
+   REAL(ReKi),     INTENT(OUT) :: Hu, yref, npy, Mu, tref, nmt, Vu, vref, ntz
+   INTEGER(IntKi) :: I
+   REAL(ReKi)     :: t
+
+   IF (depth <= Layers(1,1)) THEN
+      Hu=Layers(1,2);  yref=Layers(1,3);  npy=Layers(1,4)
+      Mu=Layers(1,5);  tref=Layers(1,6);  nmt=Layers(1,7)
+      Vu=Layers(1,8);  vref=Layers(1,9);  ntz=Layers(1,10)
+      RETURN
+   END IF
+   IF (depth >= Layers(NLayers,1)) THEN
+      Hu=Layers(NLayers,2);  yref=Layers(NLayers,3);  npy=Layers(NLayers,4)
+      Mu=Layers(NLayers,5);  tref=Layers(NLayers,6);  nmt=Layers(NLayers,7)
+      Vu=Layers(NLayers,8);  vref=Layers(NLayers,9);  ntz=Layers(NLayers,10)
+      RETURN
+   END IF
+   DO I = 1, NLayers-1
+      IF (depth >= Layers(I,1) .AND. depth <= Layers(I+1,1)) THEN
+         t = (depth - Layers(I,1)) / (Layers(I+1,1) - Layers(I,1))
+         Hu   = Layers(I,2) + t*(Layers(I+1,2) - Layers(I,2))
+         yref = Layers(I,3) + t*(Layers(I+1,3) - Layers(I,3))
+         npy  = Layers(I,4) + t*(Layers(I+1,4) - Layers(I,4))
+         Mu   = Layers(I,5) + t*(Layers(I+1,5) - Layers(I,5))
+         tref = Layers(I,6) + t*(Layers(I+1,6) - Layers(I,6))
+         nmt  = Layers(I,7) + t*(Layers(I+1,7) - Layers(I,7))
+         Vu   = Layers(I,8) + t*(Layers(I+1,8) - Layers(I,8))
+         vref = Layers(I,9) + t*(Layers(I+1,9) - Layers(I,9))
+         ntz  = Layers(I,10)+ t*(Layers(I+1,10)- Layers(I,10))
+         RETURN
+      END IF
+   END DO
+END SUBROUTINE InterpPISALayer
+
+!> Evaluate PISA hyperbolic spring curves and inject as external loads on interior L-DOFs.
+!! Called each time step (from SD_CalcContStateDeriv / SD_CalcOutput) — pile node
+!! displacements are reconstructed from the current CB state before the EOM is solved,
+!! so forces are consistent with the predictor step (Option B: residual-force correction).
+SUBROUTINE AddPISAForceToFL(p, x, m, ErrStat, ErrMsg)
+   USE SubDyn_Types, ONLY: SD_ParameterType, SD_ContinuousStateType, SD_MiscVarType
+   TYPE(SD_ParameterType), target, INTENT(IN   ) :: p
+   TYPE(SD_ContinuousStateType),   INTENT(IN   ) :: x
+   TYPE(SD_MiscVarType),         INTENT(INOUT) :: m
+   INTEGER(IntKi),               INTENT(  OUT) :: ErrStat
+   CHARACTER(*),                 INTENT(  OUT) :: ErrMsg
+
+   REAL(ReKi), ALLOCATABLE :: UL(:)
+   REAL(ReKi)              :: ux, uy, uz, rotx, roty
+   REAL(ReKi)              :: Fpy_x, Fpy_y, Ftz, Mmt_x, Mmt_y
+   REAL(ReKi)              :: ksec
+   INTEGER(IntKi)          :: iP, iN, nM, iM
+   INTEGER(IntKi), POINTER :: DOFList(:)
+   INTEGER(IntKi)          :: ErrStat2
+   CHARACTER(ErrMsgLen)    :: ErrMsg2
+
+   ErrStat = ErrID_None; ErrMsg = ''
+
+   IF (.NOT. p%UsePISA) RETURN
+   IF (p%Floating)       RETURN  ! floating case not yet implemented
+   IF (p%reduced)        RETURN  ! rigid-link reduction not yet supported
+
+   ! --- Reconstruct L-DOF physical displacement from CB state
+   CALL AllocAry(UL, p%nDOF__L, 'UL_pisa', ErrStat2, ErrMsg2)
+   CALL SetErrStat(ErrStat2, ErrMsg2, ErrStat, ErrMsg, 'AddPISAForceToFL')
+   IF (ErrStat >= AbortErrLev) RETURN
+
+   UL = matmul(p%PhiRb_TI, m%u_TP)
+   IF (p%nDOFM > 0) UL = UL + matmul(p%PhiM, x%qm)
+
+   ! --- Reuse m%Fext as scratch (zero it; GetExtForceOnInternalDOF has already returned)
+   m%Fext = 0.0_ReKi
+
+   DO iP = 1, p%nPISANodes
+      iN      = p%PISA_Nidx(iP)
+      DOFList => p%NodesDOF(iN)%List
+
+      ! Extract nodal displacement (DOFList indices 1-3=trans, 4-6=first member rots)
+      ux   = UL_at(DOFList(1)); uy   = UL_at(DOFList(2)); uz  = UL_at(DOFList(3))
+      rotx = UL_at(DOFList(4)); roty = UL_at(DOFList(5))
+
+      ! Full nonlinear PISA forces (for output storage)
+      Fpy_x = -PISACurve(ux,   p%PISA_Hu(iP),  p%PISA_yref(iP), p%PISA_npy(iP)) * p%PISA_Dz(iP)
+      Fpy_y = -PISACurve(uy,   p%PISA_Hu(iP),  p%PISA_yref(iP), p%PISA_npy(iP)) * p%PISA_Dz(iP)
+      Ftz   = -PISACurve(uz,   p%PISA_Vu(iP),  p%PISA_vref(iP), p%PISA_ntz(iP)) * p%PISA_Dz(iP)
+      Mmt_x = -PISACurve(rotx, p%PISA_Mu(iP),  p%PISA_tref(iP), p%PISA_nmt(iP)) * p%PISA_Dz(iP)
+      Mmt_y = -PISACurve(roty, p%PISA_Mu(iP),  p%PISA_tref(iP), p%PISA_nmt(iP)) * p%PISA_Dz(iP)
+
+      ! Store full nonlinear forces and secant stiffnesses for output channels
+      IF (ALLOCATED(m%PISA_Fpyx)) THEN
+         m%PISA_Fpyx(iP) = Fpy_x; m%PISA_Fpyy(iP) = Fpy_y; m%PISA_Ftz(iP) = Ftz
+         m%PISA_Mmtx(iP) = Mmt_x; m%PISA_Mmty(iP) = Mmt_y
+      END IF
+      IF (ALLOCATED(m%PISA_ksecpy)) THEN
+         ! k_sec = F_u / (uref * (n + |u/uref|)); k_sec*Dz gives effective lateral stiffness [N/m]
+         ksec = p%PISA_Hu(iP) / (p%PISA_yref(iP) * (p%PISA_npy(iP) + abs(ux/p%PISA_yref(iP)))) * p%PISA_Dz(iP)
+         m%PISA_ksecpy(iP) = ksec
+         ksec = p%PISA_Mu(iP) / (p%PISA_tref(iP) * (p%PISA_nmt(iP) + abs(rotx/p%PISA_tref(iP)))) * p%PISA_Dz(iP)
+         m%PISA_ksecmt(iP) = ksec
+         ksec = p%PISA_Vu(iP) / (p%PISA_vref(iP) * (p%PISA_ntz(iP) + abs(uz/p%PISA_vref(iP)))) * p%PISA_Dz(iP)
+         m%PISA_ksectz(iP) = ksec
+      END IF
+
+      ! Residual = k0*u - F_NL, computed analytically to avoid large-number cancellation.
+      ! DeltaF(u) = Fu * (u/uref) * |u/uref| / (n * (n + |u/uref|)) * Dz
+      ! This equals k0*u - F_NL exactly but remains well-conditioned at large displacements.
+      Fpy_x = PISAResidualF(ux,   p%PISA_Hu(iP), p%PISA_yref(iP), p%PISA_npy(iP)) * p%PISA_Dz(iP)
+      Fpy_y = PISAResidualF(uy,   p%PISA_Hu(iP), p%PISA_yref(iP), p%PISA_npy(iP)) * p%PISA_Dz(iP)
+      Ftz   = PISAResidualF(uz,   p%PISA_Vu(iP), p%PISA_vref(iP), p%PISA_ntz(iP)) * p%PISA_Dz(iP)
+      Mmt_x = PISAResidualF(rotx, p%PISA_Mu(iP), p%PISA_tref(iP), p%PISA_nmt(iP)) * p%PISA_Dz(iP)
+      Mmt_y = PISAResidualF(roty, p%PISA_Mu(iP), p%PISA_tref(iP), p%PISA_nmt(iP)) * p%PISA_Dz(iP)
+
+      ! Inject forces: translations (shared), moments split equally across connecting members
+      m%Fext(DOFList(1)) = Fpy_x
+      m%Fext(DOFList(2)) = Fpy_y
+      m%Fext(DOFList(3)) = Ftz
+      nM = (size(DOFList) - 3) / 3
+      DO iM = 1, nM
+         m%Fext(DOFList(3 + 3*(iM-1) + 1)) = Mmt_x / nM
+         m%Fext(DOFList(3 + 3*(iM-1) + 2)) = Mmt_y / nM
+      END DO
+   END DO
+
+   ! --- Project full-DOF PISA force into the L-DOF space and accumulate
+   m%F_L = m%F_L + m%Fext(p%ID__L)
+
+   IF (allocated(UL)) deallocate(UL)
+
+CONTAINS
+   ! Displacement at global DOF kDOF: search ID__L for position, return UL entry (0 if not found)
+   REAL(ReKi) FUNCTION UL_at(kDOF)
+      INTEGER(IntKi), INTENT(IN) :: kDOF
+      INTEGER(IntKi) :: j
+      UL_at = 0.0_ReKi
+      DO j = 1, size(p%ID__L)
+         IF (p%ID__L(j) == kDOF) THEN; UL_at = UL(j); RETURN; END IF
+      END DO
+   END FUNCTION UL_at
+
+   REAL(ReKi) FUNCTION PISACurve(u, Fu, uref, n)
+      REAL(ReKi), INTENT(IN) :: u, Fu, uref, n
+      REAL(ReKi) :: xi
+      xi = u / uref
+      PISACurve = Fu * xi / (n + abs(xi))
+   END FUNCTION PISACurve
+
+   ! Residual = k0*u - PISACurve(u) = Fu * (u/uref) * |u/uref| / (n * (n + |u/uref|))
+   ! Avoids catastrophic cancellation present in (-F_NL + k0*u) at large displacements.
+   REAL(ReKi) FUNCTION PISAResidualF(u, Fu, uref, n)
+      REAL(ReKi), INTENT(IN) :: u, Fu, uref, n
+      REAL(ReKi) :: xi
+      xi = u / uref
+      PISAResidualF = Fu * xi * abs(xi) / (n * (n + abs(xi)))
+   END FUNCTION PISAResidualF
+END SUBROUTINE AddPISAForceToFL
 
 END MODULE SD_FEM

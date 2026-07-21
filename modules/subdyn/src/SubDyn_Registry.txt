@@ -155,7 +155,12 @@ typedef  ^  SD_InitType   ReKi               ElemProps {:}{:} - -     "Element p
 typedef  ^  SD_InitType   INTEGER            MemberNodes {:}{:} - -   "Member number and list of nodes making up a member (>2 if subdivided)" 
 typedef  ^  SD_InitType   INTEGER            NodesConnN {:}{:} - -    "Nodes that connect to a common node   " 
 typedef  ^  SD_InitType   INTEGER            NodesConnE {:}{:} - -    "Elements that connect to a common node" 
-typedef  ^  SD_InitType   LOGICAL            SSSum - - -              "SubDyn Summary File Flag              " 
+typedef  ^  SD_InitType   LOGICAL            SSSum - - -              "SubDyn Summary File Flag              "
+# --- PISA nonlinear soil springs (forward-ported from tipota snapshot 2026-07-21)
+typedef  ^  SD_InitType   LOGICAL            UsePISA          - .FALSE. - "Enable PISA nonlinear distributed soil spring model"
+typedef  ^  SD_InitType   ReKi               PISA_MudlineZ    -  0.0   - "Global Z-coordinate of mudline" m
+typedef  ^  SD_InitType   INTEGER            NPISALayers      -  0     - "Number of PISA soil profile depth levels"
+typedef  ^  SD_InitType   ReKi               PISA_Layers  {:}{:} - -     "PISA soil layer table (NPISALayers x PISALayerCol): Depth,H_ult,y_ref,n_py,M_ult,t_ref,n_mt,V_ult,v_ref,n_tz"
 
 # ============================== States ============================================================================================================================================
 typedef  ^  ContinuousStateType  R8Ki   qm    {:}   -   -   "Virtual states, Nmod elements"
@@ -201,7 +206,16 @@ typedef  ^    MiscVarType    ReKi           Fext_red  {:} -  -     "External loa
 typedef  ^    MiscVarType    R8Ki           FG        {:} -  -     "Gravity force vector (without initial cable force T0) based on the instantaneous platform orientation, not reduced (floating only)"  N
 # SIM
 typedef  ^    MiscVarType    ReKi           UL_SIM        {:}  -  -  "UL for SIM = PhiL qL0- PhiM qm0, size nL" 
-typedef  ^    MiscVarType    ReKi           UL_0m         {:}  -  -  "Intermediate UL term for SIM = PhiM qm0, size nL" 
+typedef  ^    MiscVarType    ReKi           UL_0m         {:}  -  -  "Intermediate UL term for SIM = PhiM qm0, size nL"
+# --- MiscVar - PISA nonlinear soil springs (forward-ported from tipota snapshot 2026-07-21)
+typedef  ^    MiscVarType    ReKi           PISA_Fpyx     {:}  -  -  "Nonlinear p-y soil force in X per PISA node (integrated over Dz)" N
+typedef  ^    MiscVarType    ReKi           PISA_Fpyy     {:}  -  -  "Nonlinear p-y soil force in Y per PISA node (integrated over Dz)" N
+typedef  ^    MiscVarType    ReKi           PISA_Ftz      {:}  -  -  "Nonlinear t-z axial soil force per PISA node (integrated over Dz)" N
+typedef  ^    MiscVarType    ReKi           PISA_Mmtx     {:}  -  -  "Nonlinear m-theta soil moment about X per PISA node (integrated over Dz)" Nm
+typedef  ^    MiscVarType    ReKi           PISA_Mmty     {:}  -  -  "Nonlinear m-theta soil moment about Y per PISA node (integrated over Dz)" Nm
+typedef  ^    MiscVarType    ReKi           PISA_ksecpy   {:}  -  -  "Secant p-y stiffness x Dz per PISA node" N/m
+typedef  ^    MiscVarType    ReKi           PISA_ksecmt   {:}  -  -  "Secant m-theta stiffness x Dz per PISA node" N*m/rad
+typedef  ^    MiscVarType    ReKi           PISA_ksectz   {:}  -  -  "Secant t-z stiffness x Dz per PISA node" N/m
 ### data for writing to an output file (this data is associated with time, but saved/written in CalcOutput so not stored as an other state) ###
 
 # ============================== Parameters ============================================================================================================================================
@@ -323,6 +337,24 @@ typedef  ^  ParameterType  R8Ki    dx               {2}      - - "vector that de
 typedef  ^  ParameterType  Integer Jac_ny            -       - - "number of outputs in jacobian matrix" -
 typedef  ^  ParameterType  Integer Jac_nx            -       - - "half the number of continuous states in jacobian matrix" -
 typedef  ^  ParameterType  logical RotStates         -       - - "Orient states in rotating frame during linearization? (flag)" -
+# --- Parameters - PISA nonlinear soil springs (forward-ported from tipota snapshot 2026-07-21)
+typedef  ^  ParameterType  LOGICAL  UsePISA     -  .FALSE.  -  "Enable PISA nonlinear distributed soil spring model"
+typedef  ^  ParameterType  IntKi    nPISANodes  -  0        -  "Number of pile nodes with PISA distributed soil springs"
+typedef  ^  ParameterType  IntKi    PISA_Nidx  {:}  -  -   "SubDyn node indices of PISA spring nodes"
+typedef  ^  ParameterType  ReKi     PISA_Depth {:}  -  -   "Depth below mudline of each PISA node" m
+typedef  ^  ParameterType  ReKi     PISA_Dz    {:}  -  -   "Tributary length of each PISA node for spring integration" m
+typedef  ^  ParameterType  ReKi     PISA_Hu    {:}  -  -   "Ultimate lateral resistance per unit length at each PISA node" N/m
+typedef  ^  ParameterType  ReKi     PISA_yref  {:}  -  -   "Reference lateral displacement at each PISA node" m
+typedef  ^  ParameterType  ReKi     PISA_npy   {:}  -  -   "p-y curve shape factor at each PISA node" -
+typedef  ^  ParameterType  ReKi     PISA_Mu    {:}  -  -   "Ultimate moment resistance per unit length at each PISA node" Nm/m
+typedef  ^  ParameterType  ReKi     PISA_tref  {:}  -  -   "Reference rotation at each PISA node" rad
+typedef  ^  ParameterType  ReKi     PISA_nmt   {:}  -  -   "m-theta curve shape factor at each PISA node" -
+typedef  ^  ParameterType  ReKi     PISA_Vu    {:}  -  -   "Ultimate axial resistance per unit length at each PISA node" N/m
+typedef  ^  ParameterType  ReKi     PISA_vref  {:}  -  -   "Reference axial displacement at each PISA node" m
+typedef  ^  ParameterType  ReKi     PISA_ntz   {:}  -  -   "t-z curve shape factor at each PISA node" -
+typedef  ^  ParameterType  ReKi     PISA_kpy0  {:}  -  -   "Initial tangent lateral stiffness per unit length at each PISA node (k0=Hu/(yref*npy))" N/m/m
+typedef  ^  ParameterType  ReKi     PISA_kmt0  {:}  -  -   "Initial tangent rotational stiffness per unit length at each PISA node (k0=Mu/(tref*nmt))" Nm/rad/m
+typedef  ^  ParameterType  ReKi     PISA_ktz0  {:}  -  -   "Initial tangent axial stiffness per unit length at each PISA node (k0=Vu/(vref*ntz))" N/m/m
 
 # ============================== Inputs ============================================================================================================================================
 typedef  ^  InputType   MeshType    TPMesh         -       -   - "Transition piece inputs on a point mesh"
